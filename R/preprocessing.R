@@ -131,14 +131,15 @@ preprocess_zonation <- function(seurat_obj,
   # First try: get from counts matrix directly
   gene_names <- rownames(counts)
 
-  # If still null or empty, try alternative sources
+  # If still null or empty, try getting from assay features slot
   if (is.null(gene_names) || length(gene_names) == 0 || all(nchar(gene_names) == 0)) {
-    # Try to get from meta.features if it exists
     assay_obj <- seurat_obj@assays[["RNA"]]
-    if ("meta.features" %in% slotNames(assay_obj)) {
-      meta_feat <- assay_obj@meta.features
-      if (!is.null(meta_feat) && "var.names" %in% colnames(meta_feat)) {
-        gene_names <- meta_feat$var.names
+    if ("features" %in% slotNames(assay_obj)) {
+      feat <- assay_obj@features
+      if (!is.null(rownames(feat)) && length(rownames(feat)) > 0) {
+        gene_names <- rownames(feat)
+      } else if (is.matrix(feat) && !is.null(rownames(feat))) {
+        gene_names <- rownames(feat)
       }
     }
   }
