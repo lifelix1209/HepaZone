@@ -74,6 +74,19 @@ calculate_spatial_position <- function(seurat_obj,
   # Get normalized data matrix using helper
   mat_norm <- .get_data(seurat_obj)
 
+  # Try to get gene names from misc slot (set during preprocessing)
+  gene_names <- seurat_obj@misc$gene_names
+
+  # If we have gene names from misc, ensure the data layer has them
+  if (!is.null(gene_names) && length(gene_names) > 0) {
+    current_names <- rownames(mat_norm)
+    if (is.null(current_names) || length(current_names) == 0 ||
+        all(nchar(current_names) == 0)) {
+      # Set dimnames on the matrix
+      dimnames(mat_norm) <- list(gene_names, colnames(mat_norm))
+    }
+  }
+
   # Use default markers if not provided
   if (is.null(cv_markers)) {
     if (use_default_markers) {

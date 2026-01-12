@@ -128,13 +128,31 @@ preprocess_zonation <- function(seurat_obj,
   counts <- .get_counts(seurat_obj)
 
   # Ensure dimnames are preserved (Seurat v5 may have lost them)
-  if (is.null(rownames(counts))) {
-    # Try to get from features
-    features <- seurat_obj@assays[[assay]]@features
-    if (!is.null(features) && length(features) > 0) {
-      rownames(counts) <- features
+  # First try: get from counts matrix directly
+  gene_names <- rownames(counts)
+
+  # If still null or empty, try alternative sources
+  if (is.null(gene_names) || length(gene_names) == 0 || all(nchar(gene_names) == 0)) {
+    # Try to get from meta.features if it exists
+    assay_obj <- seurat_obj@assays[["RNA"]]
+    if ("meta.features" %in% slotNames(assay_obj)) {
+      meta_feat <- assay_obj@meta.features
+      if (!is.null(meta_feat) && "var.names" %in% colnames(meta_feat)) {
+        gene_names <- meta_feat$var.names
+      }
     }
   }
+
+  # If still null, generate placeholder names
+  if (is.null(gene_names) || length(gene_names) == 0 || all(nchar(gene_names) == 0)) {
+    gene_names <- paste0("gene", 1:nrow(counts))
+  }
+
+  # Set the gene names on counts
+  rownames(counts) <- gene_names
+
+  # Save gene names in misc slot for later retrieval
+  seurat_obj@misc$gene_names <- gene_names
 
   # Step 1: Identify and remove mitochondrial genes
   mt_genes <- grep(mt_pattern, rownames(counts), value = TRUE)
