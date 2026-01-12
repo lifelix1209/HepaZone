@@ -169,6 +169,7 @@ permutation_test <- function(expression_matrix, prob_matrix,
 #' Calculate Q-values (Multiple Testing Correction)
 #'
 #' Converts p-values to q-values using the Benjamini-Hochberg procedure.
+#' Uses qvalue package if available, otherwise falls back to stats::p.adjust.
 #'
 #' @param p_values A vector or matrix of p-values
 #' @return Q-values with same dimensions as input
@@ -178,12 +179,19 @@ permutation_test <- function(expression_matrix, prob_matrix,
 #' }
 #' @export
 calculate_qvalues <- function(p_values) {
+  # Check if qvalue is available
+  use_qvalue <- requireNamespace("qvalue", quietly = TRUE)
+
   # Handle vector input
   if (is.vector(p_values)) {
     if (all(is.na(p_values))) {
       return(rep(NA, length(p_values)))
     }
-    qvals <- qvalue::qvalue(p_values)$qvalues
+    if (use_qvalue) {
+      qvals <- qvalue::qvalue(p_values)$qvalues
+    } else {
+      qvals <- stats::p.adjust(p_values, method = "BH")
+    }
     return(qvals)
   }
 
@@ -195,7 +203,11 @@ calculate_qvalues <- function(p_values) {
     for (j in 1:ncol(p_values)) {
       col_pvals <- p_values[, j]
       if (!all(is.na(col_pvals))) {
-        qvals[, j] <- qvalue::qvalue(col_pvals)$qvalues
+        if (use_qvalue) {
+          qvals[, j] <- qvalue::qvalue(col_pvals)$qvalues
+        } else {
+          qvals[, j] <- stats::p.adjust(col_pvals, method = "BH")
+        }
       }
     }
 

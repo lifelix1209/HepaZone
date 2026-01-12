@@ -148,7 +148,8 @@ hepa_zone_reconstruct <- function(seurat_obj,
   # ===========================================================================
   msg("Step 7: Bootstrap standard error estimation (%d iterations)...", n_bootstrap)
 
-  mat_norm <- seurat_obj@assays$RNA@data
+  # Get normalized data using helper
+  mat_norm <- .get_data(seurat_obj)
   boot_result <- bootstrap_se(
     expression_matrix = mat_norm,
     prob_matrix = prob_matrix,

@@ -2,6 +2,102 @@
 # Data Preprocessing Functions
 # ==============================================================================
 
+#' Helper: Get counts matrix from Seurat object (supports v4 and v5)
+#' @keywords internal
+.get_counts <- function(seurat_obj, assay = "RNA") {
+  assay_obj <- seurat_obj@assays[[assay]]
+  slot_names <- slotNames(assay_obj)
+
+  # Seurat v5: use layers
+  if ("layers" %in% slot_names) {
+    layers <- assay_obj@layers
+    if ("counts" %in% names(layers)) {
+      return(layers[["counts"]])
+    } else if (length(layers) > 0) {
+      return(layers[[1]])
+    }
+  }
+
+  # Seurat v4: use counts or Data slot
+  if ("counts" %in% slot_names) {
+    return(assay_obj@counts)
+  } else if ("Data" %in% slot_names) {
+    return(assay_obj@Data)
+  }
+
+  stop("Cannot access counts matrix from Seurat object")
+}
+
+#' Helper: Set counts matrix in Seurat object (supports v4 and v5)
+#' @keywords internal
+.set_counts <- function(seurat_obj, counts, assay = "RNA") {
+  assay_obj <- seurat_obj@assays[[assay]]
+  slot_names <- slotNames(assay_obj)
+
+  # Seurat v5: use layers
+  if ("layers" %in% slot_names) {
+    layers <- assay_obj@layers
+    layers[["counts"]] <- counts
+    assay_obj@layers <- layers
+  } else if ("counts" %in% slot_names) {
+    assay_obj@counts <- counts
+  } else if ("Data" %in% slot_names) {
+    assay_obj@Data <- counts
+  }
+
+  seurat_obj@assays[[assay]] <- assay_obj
+  return(seurat_obj)
+}
+
+#' Helper: Get data matrix (normalized) from Seurat object
+#' @keywords internal
+.get_data <- function(seurat_obj, assay = "RNA") {
+  assay_obj <- seurat_obj@assays[[assay]]
+  slot_names <- slotNames(assay_obj)
+
+  # Seurat v5: check layers for data
+  if ("layers" %in% slot_names) {
+    layers <- assay_obj@layers
+    if ("data" %in% names(layers)) {
+      return(layers[["data"]])
+    } else if ("counts" %in% names(layers)) {
+      return(layers[["counts"]])
+    }
+  }
+
+  # Seurat v4
+  if ("data" %in% slot_names) {
+    return(assay_obj@data)
+  } else if ("Data" %in% slot_names) {
+    return(assay_obj@Data)
+  } else if ("counts" %in% slot_names) {
+    return(assay_obj@counts)
+  }
+
+  stop("Cannot access data matrix from Seurat object")
+}
+
+#' Helper: Set data matrix in Seurat object
+#' @keywords internal
+.set_data <- function(seurat_obj, data, assay = "RNA") {
+  assay_obj <- seurat_obj@assays[[assay]]
+  slot_names <- slotNames(assay_obj)
+
+  # Seurat v5: use layers
+  if ("layers" %in% slot_names) {
+    layers <- assay_obj@layers
+    layers[["data"]] <- data
+    assay_obj@layers <- layers
+  } else if ("data" %in% slot_names) {
+    assay_obj@data <- data
+  } else if ("Data" %in% slot_names) {
+    assay_obj@Data <- data
+  }
+
+  seurat_obj@assays[[assay]] <- assay_obj
+  return(seurat_obj)
+}
+
 #' Preprocess scRNA-seq Data for Zonation Analysis
 #'
 #' Performs preprocessing steps specific for liver zonation analysis:
@@ -28,8 +124,8 @@ preprocess_zonation <- function(seurat_obj,
                                  mup_pattern = "^Mup",
                                  do_normalize = TRUE) {
 
-  # Get the counts matrix
-  counts <- seurat_obj@assays$RNA@counts
+  # Get the counts matrix using helper
+  counts <- .get_counts(seurat_obj)
 
   # Step 1: Identify and remove mitochondrial genes
   mt_genes <- grep(mt_pattern, rownames(counts), value = TRUE)
@@ -47,8 +143,8 @@ preprocess_zonation <- function(seurat_obj,
     }
   }
 
-  # Update the Seurat object with filtered counts
-  seurat_obj@assays$RNA@counts <- counts
+  # Update the Seurat object with filtered counts using helper
+  seurat_obj <- .set_counts(seurat_obj, counts)
 
   # Step 3: Cell-level normalization
   # Each cell's expression divided by total expression in that cell
@@ -64,21 +160,21 @@ preprocess_zonation <- function(seurat_obj,
     # Normalize: counts / cell_total
     mat_norm <- t(t(counts) / cell_totals)
 
-    # Store in 'data' slot (normalized but not scaled)
-    seurat_obj@assays$RNA@data <- as(mat_norm, "dgCMatrix")
+    # Store in 'data' slot using helper
+    seurat_obj <- .set_data(seurat_obj, as(mat_norm, "dgCMatrix"))
 
     # Step 4: Gene-level normalization
     # Each gene divided by its maximum expression
     message("Performing gene-level normalization...")
 
-    gene_max <- Matrix::rowMax(mat_norm)
+    gene_max <- apply(mat_norm, 1, max)
     gene_max[gene_max == 0] <- 1  # Avoid division by zero
 
     # Normalize: gene_expression / gene_max
     mat_norm_genes <- mat_norm / gene_max
 
     # Update 'data' slot with double-normalized data
-    seurat_obj@assays$RNA@data <- as(mat_norm_genes, "dgCMatrix")
+    seurat_obj <- .set_data(seurat_obj, as(mat_norm_genes, "dgCMatrix"))
 
     # Store the original normalized matrix for later use
     if (!"mat_norm" %in% names(seurat_obj@misc)) {
@@ -111,8 +207,8 @@ filter_by_mitochondrial <- function(seurat_obj,
                                      mt_pattern = "^Mt-",
                                      max_mt_percent = 20,
                                      remove = TRUE) {
-  # Calculate mitochondrial percentage
-  counts <- seurat_obj@assays$RNA@counts
+  # Calculate mitochondrial percentage using helper
+  counts <- .get_counts(seurat_obj)
   mt_genes <- grep(mt_pattern, rownames(counts), value = TRUE)
 
   if (length(mt_genes) == 0) {
@@ -156,7 +252,7 @@ filter_by_mitochondrial <- function(seurat_obj,
 filter_low_complexity <- function(seurat_obj,
                                    min_cells = 3,
                                    min_counts = 100) {
-  counts <- seurat_obj@assays$RNA@counts
+  counts <- .get_counts(seurat_obj)
 
   # Gene expressed in at least min_cells
   expr_per_gene <- Matrix::rowSums(counts > 0)
@@ -172,7 +268,8 @@ filter_low_complexity <- function(seurat_obj,
   n_removed <- sum(!genes_to_keep)
   message(sprintf("Removing %d low-complexity genes", n_removed))
 
-  seurat_obj@assays$RNA@counts <- counts[genes_to_keep, ]
+  # Update counts using helper
+  seurat_obj <- .set_counts(seurat_obj, counts[genes_to_keep, ])
 
   return(seurat_obj)
 }
@@ -186,6 +283,9 @@ filter_low_complexity <- function(seurat_obj,
 #' @return A data frame with preprocessing statistics
 #' @export
 get_preprocessing_summary <- function(seurat_obj) {
+  # Get counts using helper
+  counts <- .get_counts(seurat_obj)
+
   summary_df <- data.frame(
     Metric = c(
       "Number of genes",
@@ -197,13 +297,13 @@ get_preprocessing_summary <- function(seurat_obj) {
       "Mean genes per cell"
     ),
     Value = c(
-      nrow(seurat_obj),
-      ncol(seurat_obj),
-      sum(seurat_obj@assays$RNA@counts),
-      median(Matrix::colSums(seurat_obj@assays$RNA@counts)),
-      mean(Matrix::colSums(seurat_obj@assays$RNA@counts)),
-      median(Matrix::colSums(seurat_obj@assays$RNA@counts > 0)),
-      mean(Matrix::colSums(seurat_obj@assays$RNA@counts > 0))
+      nrow(counts),
+      ncol(counts),
+      sum(counts),
+      median(Matrix::colSums(counts)),
+      mean(Matrix::colSums(counts)),
+      median(Matrix::colSums(counts > 0)),
+      mean(Matrix::colSums(counts > 0))
     )
   )
 

@@ -71,8 +71,8 @@ calculate_spatial_position <- function(seurat_obj,
                                         pn_markers = NULL,
                                         use_default_markers = TRUE) {
 
-  # Get normalized data matrix
-  mat_norm <- seurat_obj@assays$RNA@data
+  # Get normalized data matrix using helper
+  mat_norm <- .get_data(seurat_obj)
 
   # Use default markers if not provided
   if (is.null(cv_markers)) {
@@ -252,8 +252,8 @@ map_cells_to_layers <- function(seurat_obj,
 #' @export
 reconstruct_spatial_expression <- function(seurat_obj, prob_matrix) {
 
-  # Get normalized data matrix (genes x cells)
-  mat_norm <- seurat_obj@assays$RNA@data
+  # Get normalized data matrix using helper
+  mat_norm <- .get_data(seurat_obj)
 
   # Transpose to cells x genes for matrix multiplication
   mat_t <- t(mat_norm)  # cells x genes
