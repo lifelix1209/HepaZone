@@ -127,6 +127,15 @@ preprocess_zonation <- function(seurat_obj,
   # Get the counts matrix using helper
   counts <- .get_counts(seurat_obj)
 
+  # Ensure dimnames are preserved (Seurat v5 may have lost them)
+  if (is.null(rownames(counts))) {
+    # Try to get from features
+    features <- seurat_obj@assays[[assay]]@features
+    if (!is.null(features) && length(features) > 0) {
+      rownames(counts) <- features
+    }
+  }
+
   # Step 1: Identify and remove mitochondrial genes
   mt_genes <- grep(mt_pattern, rownames(counts), value = TRUE)
   if (length(mt_genes) > 0) {
@@ -160,8 +169,11 @@ preprocess_zonation <- function(seurat_obj,
     # Normalize: counts / cell_total
     mat_norm <- t(t(counts) / cell_totals)
 
-    # Store in 'data' slot using helper
-    seurat_obj <- .set_data(seurat_obj, as(mat_norm, "dgCMatrix"))
+    # Store in 'data' slot using helper (preserve dimnames)
+    dn1 <- dimnames(mat_norm)
+    mat_norm_dgc <- as(mat_norm, "dgCMatrix")
+    dimnames(mat_norm_dgc) <- dn1
+    seurat_obj <- .set_data(seurat_obj, mat_norm_dgc)
 
     # Step 4: Gene-level normalization
     # Each gene divided by its maximum expression
@@ -174,7 +186,11 @@ preprocess_zonation <- function(seurat_obj,
     mat_norm_genes <- mat_norm / gene_max
 
     # Update 'data' slot with double-normalized data
-    seurat_obj <- .set_data(seurat_obj, as(mat_norm_genes, "dgCMatrix"))
+    # Ensure dimnames are preserved when converting to dgCMatrix
+    dn <- dimnames(mat_norm_genes)
+    mat_norm_dgc <- as(mat_norm_genes, "dgCMatrix")
+    dimnames(mat_norm_dgc) <- dn
+    seurat_obj <- .set_data(seurat_obj, mat_norm_dgc)
 
     # Store the original normalized matrix for later use
     if (!"mat_norm" %in% names(seurat_obj@misc)) {

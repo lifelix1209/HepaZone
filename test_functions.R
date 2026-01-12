@@ -42,7 +42,7 @@ if (mt_removed && mup_removed) {
 cat("\n=== Test 2: calculate_spatial_position ===\n")
 set.seed(42)
 counts2 <- matrix(rpois(200, 3), nrow = 20)
-rownames(counts2) <- c(paste0("g", 1:10), "Alb", "Cyp2e1", "Hamp", "Tf", "Cyp1a2")
+rownames(counts2) <- c(paste0("g", 1:16), "Alb", "Cyp2e1", "Hamp", "Tf")
 colnames(counts2) <- paste0("cell", 1:10)
 
 seurat_obj2 <- CreateSeuratObject(counts = counts2, min.cells = 1, min.features = 1)
@@ -66,7 +66,7 @@ if (has_cl_score && cl_in_range) {
 cat("\n=== Test 3: map_cells_to_layers ===\n")
 set.seed(42)
 counts3 <- matrix(rpois(100, 3), nrow = 10)
-rownames(counts3) <- paste0("gene", 1:10)
+rownames(counts3) <- paste0("g", 1:10)
 colnames(counts3) <- paste0("cell", 1:10)
 
 seurat_obj3 <- CreateSeuratObject(counts = counts3, min.cells = 1, min.features = 1)
@@ -88,7 +88,7 @@ if (correct_dims && row_sums_ok) {
 cat("\n=== Test 4: reconstruct_spatial_expression ===\n")
 set.seed(42)
 counts4 <- matrix(rpois(200, 5), nrow = 20)
-rownames(counts4) <- paste0("gene", 1:20)
+rownames(counts4) <- paste0("g", 1:20)
 colnames(counts4) <- paste0("cell", 1:10)
 
 seurat_obj4 <- CreateSeuratObject(counts = counts4, min.cells = 1, min.features = 1)
@@ -111,7 +111,7 @@ if (correct_expr_dims) {
 cat("\n=== Test 5: bootstrap_se ===\n")
 set.seed(42)
 counts5 <- matrix(rpois(50, 3), nrow = 5)
-rownames(counts5) <- paste0("gene", 1:5)
+rownames(counts5) <- paste0("g", 1:5)
 colnames(counts5) <- paste0("cell", 1:10)
 
 prob_matrix5 <- matrix(runif(100), nrow = 10, ncol = 5)
@@ -132,7 +132,7 @@ if (boot_dims_ok && se_nonneg) {
 cat("\n=== Test 6: permutation_test ===\n")
 set.seed(42)
 counts6 <- matrix(rpois(50, 3), nrow = 5)
-rownames(counts6) <- paste0("gene", 1:5)
+rownames(counts6) <- paste0("g", 1:5)
 colnames(counts6) <- paste0("cell", 1:10)
 
 prob_matrix6 <- matrix(runif(100), nrow = 10, ncol = 5)
@@ -168,7 +168,7 @@ cat("\n=== Test 8: hepa_zone_reconstruct (full pipeline) ===\n")
 set.seed(42)
 counts8 <- matrix(rpois(100, 3), nrow = 10)
 rownames(counts8) <- c("Alb", "Cyp2e1", "Actb", "Gapdh", "Hamp",
-                       "Tf", "Cyp1a2", "gene1", "gene2", "gene3")
+                       "Tf", "Cyp1a2", "g1", "g2", "g3")
 colnames(counts8) <- paste0("cell", 1:10)
 
 seurat_obj8 <- CreateSeuratObject(counts = counts8, min.cells = 1, min.features = 1)

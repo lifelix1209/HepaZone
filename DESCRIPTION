@@ -2,8 +2,8 @@ Package: HepaZone
 Type: Package
 Title: Liver Spatial Transcriptomics Reconstruction
 Version: 0.1.0
-Author: Your Name
-Maintainer: Your Name <your.email@example.com>
+Author: Hanzhang
+Maintainer: Hanzhang <your.email@example.com>
 Description:
     HepaZone is an R package for reconstructing liver spatial
     transcriptomics profiles from scRNA-seq data. It identifies

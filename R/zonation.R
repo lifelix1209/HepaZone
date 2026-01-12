@@ -105,22 +105,33 @@ calculate_spatial_position <- function(seurat_obj,
     stop("No PN markers found in dataset")
   }
 
+  # Convert to matrix if needed for subsetting
+  mat_norm_mat <- as.matrix(mat_norm)
+
   # Calculate CV score (sum of CV marker expressions)
-  cv_expr <- mat_norm[cv_markers, , drop = FALSE]
-  cv_score <- Matrix::colSums(cv_expr)
+  cv_score <- numeric(ncol(mat_norm_mat))
+  for (m in cv_markers) {
+    if (m %in% rownames(mat_norm_mat)) {
+      cv_score <- cv_score + mat_norm_mat[m, ]
+    }
+  }
 
   # Calculate PN score (sum of PN marker expressions)
-  pn_expr <- mat_norm[pn_markers, , drop = FALSE]
-  pn_score <- Matrix::colSums(pn_expr)
+  pn_score <- numeric(ncol(mat_norm_mat))
+  for (m in pn_markers) {
+    if (m %in% rownames(mat_norm_mat)) {
+      pn_score <- pn_score + mat_norm_mat[m, ]
+    }
+  }
 
   # Calculate CL score: CL = PN / (CV + PN)
   # Range: 0 (CV) to 1 (PV)
   cl_score <- pn_score / (cv_score + pn_score)
 
   # Store in metadata
-  seurat_obj$cv_score <- as.numeric(cv_score)
-  seurat_obj$pn_score <- as.numeric(pn_score)
-  seurat_obj$CL_score <- as.numeric(cl_score)
+  seurat_obj$cv_score <- cv_score
+  seurat_obj$pn_score <- pn_score
+  seurat_obj$CL_score <- cl_score
 
   message(sprintf("CL score range: %.3f - %.3f",
                   min(cl_score, na.rm = TRUE),
