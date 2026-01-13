@@ -11,47 +11,150 @@
 #' Downloads scRNA-seq UMI data from GEO accession GSE145197 and converts
 #' it to a Seurat object for downstream analysis.
 #'
-#' @param destdir Directory to store downloaded files (default: ".")
-#' @param type Data source type: "geo" (GEO database) or "local" (local 10x files)
-#' @param ... Additional arguments passed to Read10X or GEOquery functions
-#' @return A Seurat object containing the GSE145197 data
+#' @param destdir Directory to store downloaded files (default: "data")
+#' @param time_point Time point to load: "ZT00", "ZT06", "ZT12", "ZT18", or "all"
+#'                    (default: "ZT00")
+#' @param min.cells Include features detected in at least this many cells (default: 10)
+#' @param min.features Include cells where at least this many features are detected (default: 200)
+#' @param redownload Force re-download of data (default: FALSE)
+#' @return A Seurat object (or list of Seurat objects if time_point="all")
 #' @examples
 #' \dontrun{
-#' # Download from GEO
-#' seurat_obj <- load_gse145197(destdir = "./data")
+#' # Load ZT00 sample
+#' seurat_obj <- load_gse145197(destdir = "./data", time_point = "ZT00")
 #'
-#' # Load from local 10x output
-#' seurat_obj <- load_gse145197(type = "local", path = "./raw_data")
+#' # Load all time points
+#' all_samples <- load_gse145197(destdir = "./data", time_point = "all")
 #' }
 #' @export
-load_gse145197 <- function(destdir = ".", type = c("geo", "local"), ...) {
-  type <- match.arg(type)
+load_gse145197 <- function(destdir = "data",
+                           time_point = c("ZT00", "ZT06", "ZT12", "ZT18", "all"),
+                           min.cells = 10,
+                           min.features = 200,
+                           redownload = FALSE) {
 
-  if (type == "geo") {
-    .load_from_geo(destdir, ...)
+  time_point <- match.arg(time_point)
+  geo_info <- NULL
+
+  # Check if data already exists
+  raw_dir <- file.path(destdir, "GSE145197", "suppl")
+
+  if (!redownload && dir.exists(raw_dir)) {
+    message("Using existing GSE145197 data")
+    sample_dirs <- list.dirs(raw_dir, full.names = TRUE, recursive = FALSE)
+    geo_info <- list(
+      accession = "GSE145197",
+      sample_dirs = sample_dirs,
+      raw_dir = raw_dir
+    )
   } else {
-    .load_from_local(...)
+    # Download from GEO
+    geo_info <- .load_from_geo(destdir)
+  }
+
+  if (is.null(geo_info) || length(geo_info$sample_dirs) == 0) {
+    stop("No sample data available")
+  }
+
+  # Select time point
+  if (time_point == "all") {
+    selected_dirs <- geo_info$sample_dirs
+  } else {
+    # Find directories matching the time point pattern
+    zt_pattern <- paste0(".*", time_point, ".*")
+    selected_dirs <- grep(zt_pattern, geo_info$sample_dirs, value = TRUE, ignore.case = TRUE)
+
+    if (length(selected_dirs) == 0) {
+      # Try exact match
+      selected_dirs <- grep(time_point, geo_info$sample_dirs, value = TRUE, ignore.case = TRUE)
+    }
+
+    if (length(selected_dirs) == 0) {
+      # Use first available sample
+      message(sprintf("Time point '%s' not found. Using first available sample.", time_point))
+      selected_dirs <- geo_info$sample_dirs[1]
+    }
+  }
+
+  # Load samples
+  if (length(selected_dirs) == 1) {
+    # Single sample - return Seurat object
+    sample_dir <- selected_dirs[1]
+    sample_name <- basename(sample_dir)
+
+    message(sprintf("Loading sample: %s", sample_name))
+    seurat_obj <- load_10x_data(
+      path = sample_dir,
+      sample.name = sample_name,
+      min.cells = min.cells,
+      min.features = min.features
+    )
+    return(seurat_obj)
+
+  } else {
+    # Multiple samples - return list of Seurat objects
+    message(sprintf("Loading %d time points...", length(selected_dirs)))
+    result_list <- list()
+
+    for (i in seq_along(selected_dirs)) {
+      sample_dir <- selected_dirs[i]
+      sample_name <- basename(sample_dir)
+
+      message(sprintf("  Loading %s...", sample_name))
+      result_list[[sample_name]] <- load_10x_data(
+        path = sample_dir,
+        sample.name = sample_name,
+        min.cells = min.cells,
+        min.features = min.features
+      )
+    }
+
+    return(result_list)
   }
 }
 
 
 #' Internal function to load data from GEO
 #' @keywords internal
-.load_from_geo <- function(destdir, ...) {
-  message("Note: For full GSE145197 download, use GEOquery manually.")
-  message("This function provides a template for GEO data loading.")
+.load_from_geo <- function(destdir = ".", ...) {
+  if (!requireNamespace("GEOquery", quietly = TRUE)) {
+    stop("Package 'GEOquery' is required. Install with: install.packages('GEOquery')")
+  }
 
-  # Template for GSE145197 - modify accession as needed
   accession <- "GSE145197"
+  message(sprintf("Downloading GSE145197 data from GEO to: %s", destdir))
 
-  # Example: Download supplementary files
-  # geo_obj <- GEOquery::getGEOSuppFiles(accession, makeDirectory = TRUE,
-  #                                        baseDir = destdir)
+  # Download supplementary files
+  geo_obj <- GEOquery::getGEOSuppFiles(accession,
+                                        makeDirectory = TRUE,
+                                        baseDir = destdir,
+                                        filter_regex = NULL)
 
-  # For now, return a template Seurat object
-  # Replace with actual data loading in production
-  message("Please download GSE145197 data manually and use load_10x_data()")
-  return(NULL)
+  # Find and extract the RAW.tar file
+  raw_dir <- file.path(destdir, accession, "suppl")
+  raw_tar <- list.files(raw_dir, pattern = "RAW.tar$", full.names = TRUE)
+
+  if (length(raw_tar) == 0) {
+    stop("RAW.tar file not found in downloaded files")
+  }
+
+  message(sprintf("Extracting %s", basename(raw_tar[1])))
+  untar(raw_tar[1], exdir = raw_dir)
+
+  # Find sample directories (ZT00, ZT06, etc.)
+  sample_dirs <- list.dirs(raw_dir, full.names = TRUE, recursive = FALSE)
+  message(sprintf("Found %d sample directories", length(sample_dirs)))
+
+  if (length(sample_dirs) == 0) {
+    stop("No sample directories found in RAW data")
+  }
+
+  # Return list of sample paths for further processing
+  return(list(
+    accession = accession,
+    sample_dirs = sample_dirs,
+    raw_dir = raw_dir
+  ))
 }
 
 
