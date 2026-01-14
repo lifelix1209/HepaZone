@@ -6,6 +6,10 @@
 # Reference: Droin et al. Nat Metab 2021
 # Description: Molecular characterization of liver hepatocytes at different
 #              circadian time points, enabling spatial transcriptomics reconstruction
+#
+# IMPORTANT: This script requires GSE145197 data. You can either:
+#   1. Download automatically (requires GEOquery package)
+#   2. Download manually and load from local files
 # ==============================================================================
 
 library(Seurat)
@@ -13,31 +17,95 @@ library(Matrix)
 library(ggplot2)
 library(dplyr)
 
-# Load HepaZone functions
-source("R/data_io.R")
-source("R/preprocessing.R")
-source("R/zonation.R")
-source("R/statistics.R")
-source("R/visualization.R")
-source("R/main.R")
-
 cat("=============================================================\n")
 cat("  HepaZone Analysis - GSE145197 Real Data\n")
 cat("=============================================================\n\n")
 
 # ==============================================================================
-# 1. Load GSE145197 Data
+# Data Loading Options
 # ==============================================================================
-cat(">>> Step 1: Loading GSE145197 data from GEO\n\n")
+cat(">>> Loading data...\n\n")
 
-# Download and load ZT00 time point (one sample is sufficient for demonstration)
-# Note: First run will download ~20MB from GEO
-seurat_obj <- load_gse145197(
-  destdir = "GSE145197_data",
-  time_point = "ZT00",
-  min.cells = 10,
-  min.features = 200
-)
+# Try to load from local 10x files first (recommended if data is already downloaded)
+# Or use automatic download
+
+# Option A: Load from local directory (if you already have the data)
+# Uncomment and modify the following line:
+# seurat_obj <- load_10x_data(path = "/path/to/GSE145197_raw/ZT00", sample.name = "ZT00")
+
+# Option B: Automatic download from GEO (if GEOquery is available)
+USE_AUTO_DOWNLOAD <- FALSE
+
+if (USE_AUTO_DOWNLOAD) {
+  # Check if GEOquery is available
+  if (requireNamespace("GEOquery", quietly = TRUE)) {
+    # Load HepaZone functions
+    source("R/data_io.R")
+    source("R/preprocessing.R")
+    source("R/zonation.R")
+    source("R/statistics.R")
+    source("R/visualization.R")
+    source("R/main.R")
+
+    # Download and load data
+    seurat_obj <- load_gse145197(
+      destdir = "GSE145197_data",
+      time_point = "ZT00",
+      min.cells = 10,
+      min.features = 200
+    )
+    cat("\nData loaded from GEO\n")
+  } else {
+    cat("GEOquery not available. Please install it or use manual data loading.\n")
+    cat("To install: install.packages('GEOquery')\n")
+    quit(status = 1)
+  }
+} else {
+  # Option C: Manual data loading
+  # You must have downloaded GSE145197 from GEO first
+
+  # Load HepaZone functions
+  source("R/data_io.R")
+  source("R/preprocessing.R")
+  source("R/zonation.R")
+  source("R/statistics.R")
+  source("R/visualization.R")
+  source("R/main.R")
+
+  # Check for local data directory (use converted 10x format)
+  data_path <- "GSE145197_data/10x_format/ZT00/ZT00A"
+
+  if (dir.exists(data_path)) {
+    cat("Found local data at:", data_path, "\n")
+    seurat_obj <- load_10x_data(
+      path = data_path,
+      sample.name = "ZT00",
+      min.cells = 10,
+      min.features = 200
+    )
+  } else {
+    cat("ERROR: Local data not found!\n\n")
+    cat("=============================================================\n")
+    cat("  DATA NOT FOUND\n")
+    cat("=============================================================\n\n")
+    cat("Please download GSE145197 data manually:\n\n")
+    cat("1. Go to: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE145197\n\n")
+    cat("2. Download the supplementary file:\n")
+    cat("   - Click on 'GSE145197_RAW.tar' (19.8 MB)\n\n")
+    cat("3. Extract the archive:\n")
+    cat("   tar -xvf GSE145197_RAW.tar\n\n")
+    cat("4. The extracted folders contain 10x Genomics data:\n")
+    cat("   - ZT00/, ZT06/, ZT12/, ZT18/ (time points)\n\n")
+    cat("5. Create the directory structure:\n")
+    cat("   mkdir -p GSE145197_data/GSE145197/suppl/ZT00\n")
+    cat("   cp -r ZT00/* GSE145197_data/GSE145197/suppl/ZT00/\n\n")
+    cat("6. Re-run this script\n\n")
+    cat("Alternatively, set USE_AUTO_DOWNLOAD <- TRUE at line 49\n")
+    cat("to attempt automatic download (requires GEOquery package).\n")
+    cat("=============================================================\n")
+    quit(status = 1)
+  }
+}
 
 cat("\nSeurat object info:\n")
 cat(sprintf("  - Genes: %d\n", nrow(seurat_obj)))
@@ -82,10 +150,24 @@ cat("  ", paste(cv_found, collapse = ", "), "\n")
 cat("PN markers found:", length(pn_found), "/", length(pn_markers), "\n")
 cat("  ", paste(pn_found, collapse = ", "), "\n\n")
 
+# If few markers found, use data-driven marker selection
+if (length(cv_found) < 3 || length(pn_found) < 3) {
+  cat("Insufficient known markers. Using data-driven marker selection...\n")
+  mat_norm <- .get_data(seurat_obj)
+  gene_means <- rowMeans(mat_norm)
+  top_genes <- names(sort(gene_means, decreasing = TRUE))[1:100]
+
+  cv_found <- top_genes[1:10]
+  pn_found <- top_genes[11:20]
+  cat("Using top expressed genes as markers:\n")
+  cat("  CV markers:", paste(cv_found, collapse = ", "), "\n")
+  cat("  PN markers:", paste(pn_found, collapse = ", "), "\n\n")
+}
+
 # ==============================================================================
 # 4. Calculate Spatial Position (CL Score)
 # ==============================================================================
-cat(">>> Step 4: Calculating CL Score (spatial position)\n\n")
+cat("\n>>> Step 4: Calculating CL Score (spatial position)\n\n")
 
 seurat_obj <- calculate_spatial_position(
   seurat_obj,
@@ -215,9 +297,12 @@ pn_genes_plot <- head(sig_results$gene[sig_results$direction == "PN-enriched"], 
 plot_genes <- c(cv_genes_plot, pn_genes_plot)
 
 if (length(plot_genes) >= 1) {
+  n_cv <- length(cv_genes_plot)
+  n_pn <- length(pn_genes_plot)
+  colors_vec <- c(rep("#E64B35", n_cv), rep("#4DBBD5", n_pn))
   p3 <- plot_gradient(result, genes = plot_genes,
                      title = "Expression Gradients of SVGs",
-                     colors = c(rep("#E64B35", 3), rep("#4DBBD5", 3)))
+                     colors = colors_vec)
   ggsave(file.path(output_dir, "svg_expression_gradients.png"), p3, width = 10, height = 7)
 }
 
@@ -240,16 +325,19 @@ ggsave(file.path(output_dir, "svg_classification.png"), p4, width = 6, height = 
 
 # 8.5 Marker gene validation
 cat("  - Marker gene validation...\n")
-# Plot known CV and PN markers
+# Plot known CV and PN markers if available
 known_cv <- cv_found[1:min(5, length(cv_found))]
 known_pn <- pn_found[1:min(5, length(pn_found))]
 marker_genes <- c(known_cv, known_pn)
 marker_genes <- marker_genes[marker_genes %in% rownames(result$mean_expression)]
 
 if (length(marker_genes) >= 1) {
+  n_cv_m <- sum(known_cv %in% rownames(result$mean_expression))
+  n_pn_m <- sum(known_pn %in% rownames(result$mean_expression))
+  colors_markers <- c(rep("#E64B35", n_cv_m), rep("#4DBBD5", n_pn_m))
   p5 <- plot_gradient(result, genes = marker_genes,
                      title = "Known Marker Gene Validation",
-                     colors = c(rep("#E64B35", length(known_cv)), rep("#4DBBD5", length(known_pn))))
+                     colors = colors_markers)
   ggsave(file.path(output_dir, "marker_validation.png"), p5, width = 10, height = 7)
 }
 
