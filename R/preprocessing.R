@@ -55,14 +55,28 @@
   assay_obj <- seurat_obj@assays[[assay]]
   slot_names <- slotNames(assay_obj)
 
+  # Get gene names and cell names
+  gene_names <- rownames(seurat_obj)
+  cell_names <- colnames(seurat_obj)
+
   # Seurat v5: check layers for data
   if ("layers" %in% slot_names) {
     layers <- assay_obj@layers
     if ("data" %in% names(layers)) {
-      return(layers[["data"]])
+      mat <- layers[["data"]]
     } else if ("counts" %in% names(layers)) {
-      return(layers[["counts"]])
+      mat <- layers[["counts"]]
+    } else {
+      stop("No data or counts layer found")
     }
+    # Ensure dimnames are set
+    if (is.null(rownames(mat)) && length(gene_names) > 0) {
+      rownames(mat) <- gene_names
+    }
+    if (is.null(colnames(mat)) && length(cell_names) > 0) {
+      colnames(mat) <- cell_names
+    }
+    return(mat)
   }
 
   # Seurat v4

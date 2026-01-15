@@ -130,9 +130,9 @@ hepa_zone_reconstruct <- function(seurat_obj,
     use_pca = use_pca
   )
 
-  # Store markers used
-  if (is.null(cv_markers)) cv_markers <- .default_cv_markers()
-  if (is.null(pn_markers)) pn_markers <- .default_pn_markers()
+  # Store markers used (will be detected automatically if not provided)
+  if (is.null(cv_markers)) cv_markers <- .default_cv_markers_mouse()
+  if (is.null(pn_markers)) pn_markers <- .default_pn_markers_mouse()
 
   # ===========================================================================
   # Step 4b: KNN Smoothing (Optional)
@@ -242,7 +242,24 @@ hepa_zone_reconstruct <- function(seurat_obj,
       use_pca = use_pca,
       knn_smooth = knn_smooth,
       k_neighbors = k_neighbors
-    )
+    ),
+    species = if ("pca_gradient" %in% names(seurat_obj@meta.data)) {
+      # Try to detect from CV markers used
+      if (length(cv_markers) > 0) {
+        first_marker <- cv_markers[1]
+        if (grepl("^[A-Z][a-z]", first_marker)) {
+          "mouse"
+        } else if (grepl("^[A-Z]+$", first_marker)) {
+          "human"
+        } else {
+          "unknown"
+        }
+      } else {
+        "unknown"
+      }
+    } else {
+      "unknown"
+    }
   )
 
   class(result) <- "HepaZoneResult"
