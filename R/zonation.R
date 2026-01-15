@@ -49,17 +49,18 @@
 }
 
 
-#' Calculate Spatial Position Scores
+#' Calculate Spatial Position Scores Using PCA-Based Multi-Gene Weighting
 #'
 #' Computes spatial position scores for each cell using CV and PN marker genes.
-#' The CL score (central-portal ratio) indicates the position along the
-#' liver lobule axis: low values = near central vein, high values = near portal vein.
+#' Uses Z-score normalization followed by PCA to extract the first principal
+#' component as the spatial gradient, providing optimal multi-gene weighting.
 #'
 #' @param seurat_obj Preprocessed Seurat object with normalized data
 #' @param cv_markers Character vector of central vein marker genes (optional)
 #' @param pn_markers Character vector of portal marker genes (optional)
 #' @param use_default_markers Use default marker sets if not provided (default: TRUE)
-#' @return Seurat object with 'cv_score', 'pn_score', and 'CL_score' in meta.data
+#' @param use_pca Use PCA for multi-gene weighting (default: TRUE)
+#' @return Seurat object with 'pca_gradient', 'cv_score', 'pn_score', and 'CL_score' in meta.data
 #' @examples
 #' \dontrun{
 #' seurat_obj <- preprocess_zonation(seurat_obj)
@@ -69,7 +70,8 @@
 calculate_spatial_position <- function(seurat_obj,
                                         cv_markers = NULL,
                                         pn_markers = NULL,
-                                        use_default_markers = TRUE) {
+                                        use_default_markers = TRUE,
+                                        use_pca = TRUE) {
 
   # Get normalized data matrix using helper
   mat_norm <- .get_data(seurat_obj)
@@ -137,18 +139,218 @@ calculate_spatial_position <- function(seurat_obj,
     }
   }
 
-  # Calculate CL score: CL = PN / (CV + PN)
-  # Range: 0 (CV) to 1 (PV)
-  cl_score <- pn_score / (cv_score + pn_score)
+  if (use_pca) {
+    # === PCA-BASED MULTI-GENE WEIGHTING ===
+    message("Computing PCA-based spatial gradient from marker genes...")
 
-  # Store in metadata
-  seurat_obj$cv_score <- cv_score
-  seurat_obj$pn_score <- pn_score
-  seurat_obj$CL_score <- cl_score
+    # Combine CV and PN markers
+    all_markers <- c(cv_markers, pn_markers)
+    marker_mat <- mat_norm_mat[all_markers, , drop = FALSE]  # genes x cells
 
-  message(sprintf("CL score range: %.3f - %.3f",
-                  min(cl_score, na.rm = TRUE),
-                  max(cl_score, na.rm = TRUE)))
+    # Z-score normalize each marker gene across cells
+    # (column-wise standardization for each gene)
+    marker_zscore <- apply(marker_mat, 1, function(x) {
+      x_mean <- mean(x, na.rm = TRUE)
+      x_sd <- sd(x, na.rm = TRUE)
+      if (x_sd > 0) {
+        (x - x_mean) / x_sd
+      } else {
+        x - x_mean
+      }
+    })
+    marker_zscore <- as.matrix(marker_zscore)
+    rownames(marker_zscore) <- rownames(marker_mat)
+    colnames(marker_zscore) <- colnames(mat_norm_mat)
+
+    # Transpose: cells x genes for PCA
+    marker_cell_mat <- t(marker_zscore)  # cells x genes
+
+    # Run PCA
+    pca_result <- stats::prcomp(marker_cell_mat, center = FALSE, scale. = FALSE)
+
+    # Extract first principal component (PC1 captures the CV-PN gradient)
+    pc1 <- pca_result$x[, 1]
+
+    # Determine direction: PC1 should increase from CV to PN
+    # Check correlation with PN score (sum of PN markers)
+    corr_with_pn <- cor(pc1, pn_score, use = "complete.obs")
+    if (corr_with_pn < 0) {
+      # PC1 is negatively correlated with PN, flip it
+      pc1 <- -pc1
+      message("Flipping PC1 direction to align with PN markers")
+    }
+
+    # Map PC1 to [0, 1] range using rank-based transformation
+    # This is more robust than min-max scaling
+    pc1_ranks <- rank(pc1, ties.method = "average")
+    pca_gradient <- (pc1_ranks - 1) / (length(pc1_ranks) - 1)
+
+    # Store in metadata
+    seurat_obj$pca_gradient <- pca_gradient
+    seurat_obj$pc1 <- pc1
+    seurat_obj$cv_score <- cv_score
+    seurat_obj$pn_score <- pn_score
+    seurat_obj$CL_score <- pca_gradient
+
+    message(sprintf("PCA gradient range: %.3f - %.3f",
+                    min(pca_gradient, na.rm = TRUE),
+                    max(pca_gradient, na.rm = TRUE)))
+    message(sprintf("PC1 explains %.1f%% of marker gene variance",
+                    summary(pca_result)$importance[2, 1] * 100))
+
+  } else {
+    # === ORIGINAL RATIO-BASED METHOD ===
+    message("Using ratio-based CL score (legacy method)...")
+
+    # Calculate CL score: CL = PN / (CV + PN)
+    # Range: 0 (CV) to 1 (PV)
+    cl_score <- pn_score / (cv_score + pn_score)
+
+    # Store in metadata
+    seurat_obj$cv_score <- cv_score
+    seurat_obj$pn_score <- pn_score
+    seurat_obj$CL_score <- cl_score
+
+    message(sprintf("CL score range: %.3f - %.3f",
+                    min(cl_score, na.rm = TRUE),
+                    max(cl_score, na.rm = TRUE)))
+  }
+
+  return(seurat_obj)
+}
+
+
+#' KNN-Based Spatial Smoothing of Gradient Scores
+#'
+#' Smooths spatial gradient scores using transcriptome similarity between cells.
+#' Each cell's score is averaged with its k nearest neighbors weighted by similarity.
+#'
+#' @param seurat_obj Seurat object with gradient scores in meta.data
+#' @param score_col Name of the score column to smooth (default: "CL_score")
+#' @param k Number of nearest neighbors (default: 20)
+#' @param use_pca Use PCA for dimensionality reduction before finding neighbors (default: TRUE)
+#' @param n_pcs Number of PCs to use if use_pca = TRUE (default: 30)
+#' @param weight_by_distance Weight neighbors by similarity distance (default: TRUE)
+#' @return Seurat object with smoothed scores added to meta.data
+#' @examples
+#' \dontrun{
+#' seurat_obj <- calculate_spatial_position(seurat_obj)
+#' seurat_obj <- knn_smooth_scores(seurat_obj, k = 20)
+#' }
+#' @export
+knn_smooth_scores <- function(seurat_obj,
+                               score_col = "CL_score",
+                               k = 20,
+                               use_pca = TRUE,
+                               n_pcs = 30,
+                               weight_by_distance = TRUE) {
+
+  message(sprintf("KNN smoothing with k=%d neighbors...", k))
+
+  # Check if score column exists
+  if (!score_col %in% colnames(seurat_obj@meta.data)) {
+    stop(sprintf("Score column '%s' not found in meta.data", score_col))
+  }
+
+  scores <- seurat_obj@meta.data[[score_col]]
+  n_cells <- length(scores)
+
+  if (n_cells < k + 1) {
+    warning(sprintf("Number of cells (%d) < k+1 (%d), using k=%d",
+                    n_cells, k + 1, n_cells - 1))
+    k <- max(1, n_cells - 1)
+  }
+
+  # Get normalized expression matrix
+  mat_norm <- .get_data(seurat_obj)
+
+  # Determine number of PCs to use
+  max_pcs <- min(n_cells - 1, nrow(mat_norm) - 1)
+  n_pcs_use <- min(n_pcs, max_pcs)
+  if (n_pcs_use < 10) {
+    warning(sprintf("Low number of PCs (%d), using all available", n_pcs_use))
+  }
+
+  if (use_pca) {
+    # Run PCA on the expression matrix
+    message(sprintf("Running PCA with %d components...", n_pcs_use))
+
+    # Use Seurat's PCA if available
+    if ("pca" %in% Seurat::Reductions(seurat_obj)) {
+      pca_coords <- Seurat::Embeddings(seurat_obj, reduction = "pca")
+      # Select top n_pcs_use dimensions
+      if (ncol(pca_coords) >= n_pcs_use) {
+        pca_coords <- pca_coords[, 1:n_pcs_use, drop = FALSE]
+      } else {
+        n_pcs_use <- ncol(pca_coords)
+      }
+    } else {
+      # Compute PCA manually
+      mat_t <- t(as.matrix(mat_norm))
+      pca_result <- stats::prcomp(mat_t, rank = n_pcs_use, center = TRUE, scale. = TRUE)
+      pca_coords <- pca_result$x
+    }
+  } else {
+    # Use raw expression for similarity
+    message("Using raw expression for neighbor finding...")
+    mat_t <- t(as.matrix(mat_norm))
+    pca_coords <- mat_t
+  }
+
+  # Calculate cell-cell distance matrix (Euclidean in PCA space)
+  message("Computing cell-cell distances...")
+  cell_dist <- as.matrix(dist(pca_coords))
+
+  # Find k nearest neighbors for each cell (excluding self)
+  message("Finding k-nearest neighbors...")
+  smoothed_scores <- numeric(n_cells)
+
+  for (i in 1:n_cells) {
+    # Get distances to all other cells
+    dists <- cell_dist[i, ]
+
+    # Find k nearest neighbors (excluding self)
+    neighbor_order <- order(dists)[2:(k + 1)]  # Skip self (index 1)
+    neighbor_dists <- dists[neighbor_order]
+
+    if (weight_by_distance) {
+      # Convert distances to weights using Gaussian kernel
+      # Smaller distance = higher weight
+      sigma <- median(neighbor_dists)  # Use median as bandwidth
+      if (sigma == 0) sigma <- 1
+
+      weights <- exp(-neighbor_dists^2 / (2 * sigma^2))
+      weights <- weights / sum(weights)  # Normalize
+
+      # Weighted average of self and neighbors
+      self_weight <- 0.5  # Weight for original cell
+      neighbor_weight <- (1 - self_weight) / k
+
+      smoothed_scores[i] <- self_weight * scores[i] +
+                           neighbor_weight * sum(scores[neighbor_order])
+    } else {
+      # Simple average of self and neighbors
+      smoothed_scores[i] <- mean(c(scores[i], scores[neighbor_order]))
+    }
+  }
+
+  # Map to [0, 1] range using rank-based transformation (more robust)
+  smoothed_ranks <- rank(smoothed_scores, ties.method = "average")
+  smoothed_scores_scaled <- (smoothed_ranks - 1) / (length(smoothed_ranks) - 1)
+
+  # Add smoothed scores to metadata
+  new_col_name <- paste0("smoothed_", score_col)
+  seurat_obj@meta.data[[new_col_name]] <- smoothed_scores_scaled
+
+  # Update CL_score to use smoothed version if it was the original score
+  if (score_col == "CL_score") {
+    seurat_obj$CL_score <- smoothed_scores_scaled
+    message("Updated CL_score with smoothed values")
+  }
+
+  message(sprintf("Smoothed score range: %.3f - %.3f",
+                  min(smoothed_scores_scaled, na.rm = TRUE),
+                  max(smoothed_scores_scaled, na.rm = TRUE)))
 
   return(seurat_obj)
 }

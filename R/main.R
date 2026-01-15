@@ -20,6 +20,9 @@
 #' @param do_filter Filter low-quality cells by mitochondrial content (default: TRUE)
 #' @param max_mt_percent Maximum mitochondrial percentage for filtering (default: 20)
 #' @param gamma_shape Shape parameter for Gamma distribution (default: 5)
+#' @param use_pca Use PCA for multi-gene weighting (default: TRUE)
+#' @param knn_smooth Apply KNN smoothing after gradient calculation (default: TRUE)
+#' @param k_neighbors Number of nearest neighbors for KNN smoothing (default: 20)
 #' @param seed Random seed for reproducibility (default: 42)
 #' @param verbose Print progress messages (default: TRUE)
 #' @return A HepaZone result object containing:
@@ -42,6 +45,9 @@
 #' # From existing Seurat object
 #' result <- hepa_zone_reconstruct(seurat_obj, n_zones = 10,
 #'                                  n_bootstrap = 500, n_permutations = 1000)
+#'
+#' # With KNN smoothing
+#' result <- hepa_zone_reconstruct(seurat_obj, knn_smooth = TRUE, k_neighbors = 30)
 #' }
 #' @export
 hepa_zone_reconstruct <- function(seurat_obj,
@@ -57,6 +63,9 @@ hepa_zone_reconstruct <- function(seurat_obj,
                                     do_filter = TRUE,
                                     max_mt_percent = 20,
                                     gamma_shape = 5,
+                                    use_pca = TRUE,
+                                    knn_smooth = TRUE,
+                                    k_neighbors = 20,
                                     seed = 42,
                                     verbose = TRUE) {
 
@@ -109,7 +118,7 @@ hepa_zone_reconstruct <- function(seurat_obj,
   )
 
   # ===========================================================================
-  # Step 4: Calculate Spatial Position Scores
+  # Step 4: Calculate Spatial Position Scores (PCA-based)
   # ===========================================================================
   msg("Step 4: Calculating spatial position scores...")
 
@@ -117,12 +126,29 @@ hepa_zone_reconstruct <- function(seurat_obj,
     seurat_obj,
     cv_markers = cv_markers,
     pn_markers = pn_markers,
-    use_default_markers = is.null(cv_markers) || is.null(pn_markers)
+    use_default_markers = is.null(cv_markers) || is.null(pn_markers),
+    use_pca = use_pca
   )
 
   # Store markers used
   if (is.null(cv_markers)) cv_markers <- .default_cv_markers()
   if (is.null(pn_markers)) pn_markers <- .default_pn_markers()
+
+  # ===========================================================================
+  # Step 4b: KNN Smoothing (Optional)
+  # ===========================================================================
+  if (knn_smooth) {
+    msg("Step 4b: Applying KNN smoothing (k=%d)...", k_neighbors)
+
+    seurat_obj <- knn_smooth_scores(
+      seurat_obj,
+      score_col = "CL_score",
+      k = k_neighbors,
+      use_pca = TRUE,
+      n_pcs = 30,
+      weight_by_distance = TRUE
+    )
+  }
 
   # ===========================================================================
   # Step 5: Map Cells to Spatial Layers
@@ -189,6 +215,10 @@ hepa_zone_reconstruct <- function(seurat_obj,
   # Compile Results
   # ===========================================================================
 
+  # Check if smoothed scores are available
+  smoothed_col <- paste0("smoothed_", "CL_score")
+  has_smoothed <- smoothed_col %in% colnames(seurat_obj@meta.data)
+
   result <- list(
     mean_expression = spatial_result$mean_expression,
     standard_error = boot_result$se,
@@ -198,12 +228,21 @@ hepa_zone_reconstruct <- function(seurat_obj,
     cv_markers = cv_markers,
     pn_markers = pn_markers,
     cl_scores = seurat_obj$CL_score,
+    pca_gradient = if ("pca_gradient" %in% colnames(seurat_obj@meta.data))
+                     seurat_obj$pca_gradient else NULL,
+    smoothed_scores = if (has_smoothed)
+                        seurat_obj@meta.data[[smoothed_col]] else NULL,
     cells = colnames(seurat_obj),
     genes = rownames(seurat_obj),
     n_zones = n_zones,
     svg_results = svg_results,
     permutation_stats = perm_result,
-    preprocessing = seurat_obj@misc
+    preprocessing = seurat_obj@misc,
+    method_params = list(
+      use_pca = use_pca,
+      knn_smooth = knn_smooth,
+      k_neighbors = k_neighbors
+    )
   )
 
   class(result) <- "HepaZoneResult"
