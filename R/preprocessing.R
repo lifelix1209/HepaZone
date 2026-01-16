@@ -142,10 +142,8 @@ preprocess_zonation <- function(seurat_obj,
   counts <- .get_counts(seurat_obj)
 
   # Ensure dimnames are preserved (Seurat v5 may have lost them)
-  # First try: get from counts matrix directly
+  # Get gene names from counts or assay features
   gene_names <- rownames(counts)
-
-  # If still null or empty, try getting from assay features slot
   if (is.null(gene_names) || length(gene_names) == 0 || all(nchar(gene_names) == 0)) {
     assay_obj <- seurat_obj@assays[["RNA"]]
     if ("features" %in% slotNames(assay_obj)) {
@@ -158,16 +156,24 @@ preprocess_zonation <- function(seurat_obj,
     }
   }
 
-  # If still null, generate placeholder names
+  # Get cell names from the Seurat object (more reliable in Seurat v5)
+  cell_names <- colnames(seurat_obj)
+  if (is.null(cell_names) || length(cell_names) == 0) {
+    cell_names <- paste0("cell", 1:ncol(counts))
+  }
+
+  # If still null, generate placeholder names for genes
   if (is.null(gene_names) || length(gene_names) == 0 || all(nchar(gene_names) == 0)) {
     gene_names <- paste0("gene", 1:nrow(counts))
   }
 
-  # Set the gene names on counts
+  # Set the dimnames on counts
   rownames(counts) <- gene_names
+  colnames(counts) <- cell_names
 
-  # Save gene names in misc slot for later retrieval
+  # Save gene names and cell names in misc slot for later retrieval
   seurat_obj@misc$gene_names <- gene_names
+  seurat_obj@misc$cell_names <- cell_names
 
   # Step 1: Identify and remove mitochondrial genes
   mt_genes <- grep(mt_pattern, rownames(counts), value = TRUE)
@@ -226,8 +232,23 @@ preprocess_zonation <- function(seurat_obj,
     seurat_obj <- .set_data(seurat_obj, mat_norm_dgc)
 
     # Store the original normalized matrix for later use
+    # Ensure dimnames are preserved
+    gene_names_final <- rownames(mat_norm_genes)
+    cell_names_final <- colnames(mat_norm_genes)
+
+    if (is.null(gene_names_final) || length(gene_names_final) != nrow(mat_norm_genes)) {
+      gene_names_final <- seurat_obj@misc$gene_names
+    }
+    if (is.null(cell_names_final) || length(cell_names_final) != ncol(mat_norm_genes)) {
+      cell_names_final <- seurat_obj@misc$cell_names
+    }
+
+    mat_norm_genes_copy <- mat_norm_genes
+    rownames(mat_norm_genes_copy) <- gene_names_final
+    colnames(mat_norm_genes_copy) <- cell_names_final
+
     if (!"mat_norm" %in% names(seurat_obj@misc)) {
-      seurat_obj@misc$mat_norm <- mat_norm_genes
+      seurat_obj@misc$mat_norm <- mat_norm_genes_copy
     }
   }
 

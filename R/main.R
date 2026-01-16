@@ -64,6 +64,7 @@ hepa_zone_reconstruct <- function(seurat_obj,
                                     do_filter = TRUE,
                                     max_mt_percent = 20,
                                     kappa = 30,
+                                    use_pca = TRUE,
                                     knn_smooth = TRUE,
                                     k_neighbors = 20,
                                     seed = 42,
@@ -271,6 +272,9 @@ hepa_zone_reconstruct <- function(seurat_obj,
   )
 
   class(result) <- "HepaZoneResult"
+
+  # Also return the modified seurat_obj for user's convenience
+  result$seurat_obj <- seurat_obj
 
   msg("\n===== HepaZone Analysis Complete =====")
   msg("Output dimensions: %d genes x %d zones",

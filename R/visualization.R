@@ -997,3 +997,679 @@ save_publication_figure <- function(plot,
   
   invisible(NULL)
 }
+
+
+# ==============================================================================
+# Additional Analysis and Quality Control Plots
+# ==============================================================================
+
+#' Plot CV vs PN Expression Colored by CL Score
+#'
+#' Publication-quality scatter plot of mean CV vs PN marker expression
+#' with cells colored by their CL score.
+#'
+#' @param seurat_obj Seurat object with CL scores
+#' @param normalized_data Optional normalized expression matrix (Gene x Cell).
+#'        If NULL, will try to get from seurat_obj@misc$mat_norm or assay layers.
+#' @param cv_genes CV marker genes
+#' @param pn_genes PN marker genes
+#' @param use_strength Use CL_strength instead of CL_rank (default: TRUE)
+#' @param n_cells Number of cells to plot (default: min(5000, all cells))
+#' @param point_size Point size (default: 0.8)
+#' @param alpha Point transparency (default: 0.4)
+#' @param add_abline Add diagonal reference line (default: TRUE)
+#' @param title Plot title
+#' @return A ggplot object
+#' @export
+plot_cv_pn_by_cl <- function(seurat_obj,
+                              normalized_data = NULL,
+                              cv_genes = NULL,
+                              pn_genes = NULL,
+                              use_strength = TRUE,
+                              n_cells = 5000,
+                              point_size = 0.8,
+                              alpha = 0.4,
+                              add_abline = TRUE,
+                              title = "CV vs PN Expression (colored by CL Score)") {
+
+  # Get normalized data - use provided matrix or try to get from seurat_obj
+  if (!is.null(normalized_data)) {
+    mat_norm <- normalized_data
+  } else if (!is.null(seurat_obj@misc$mat_norm)) {
+    mat_norm <- seurat_obj@misc$mat_norm
+  } else {
+    mat_norm <- .get_expr_data(seurat_obj)
+  }
+  gene_names <- rownames(mat_norm)
+
+  # Auto-detect gene name format
+  n_upper <- sum(gene_names == toupper(gene_names), na.rm = TRUE)
+  n_title <- sum(gene_names != toupper(gene_names) & gene_names != tolower(gene_names), na.rm = TRUE)
+  n_lower <- sum(gene_names == tolower(gene_names), na.rm = TRUE)
+  n_total <- length(gene_names)
+
+  # Use appropriate marker set based on gene name format
+  if (is.null(cv_genes) || is.null(pn_genes)) {
+    if (n_total > 0 && n_lower / n_total > 0.5) {
+      # Mostly lowercase - use lowercase markers
+      cv_genes <- tolower(.default_cv_markers_mouse())
+      pn_genes <- tolower(.default_pn_markers_mouse())
+    } else if (n_total > 0 && n_upper / n_total > 0.5) {
+      # Mostly uppercase - use uppercase markers
+      cv_genes <- toupper(.default_cv_markers_mouse())
+      pn_genes <- toupper(.default_pn_markers_mouse())
+    } else {
+      # Mixed/Title Case - use default Title Case markers
+      cv_genes <- .default_cv_markers_mouse()
+      pn_genes <- .default_pn_markers_mouse()
+    }
+  }
+
+  # Get normalized data for expression calculation (reuse mat_norm if already set)
+  if (is.null(normalized_data) && is.null(seurat_obj@misc$mat_norm)) {
+    mat_norm <- .get_expr_data(seurat_obj)
+  }
+  gene_names_rownames <- rownames(mat_norm)
+
+  # Create a mapping: convert both marker names and dataset names to lowercase
+  # and replace underscores with dashes for matching
+  normalize_gene_name <- function(x) {
+    x <- tolower(x)
+    x <- gsub("_", "-", x)
+    x
+  }
+
+  # Filter for available genes with flexible matching
+  normalized_markers_cv <- normalize_gene_name(cv_genes)
+  normalized_markers_pn <- normalize_gene_name(pn_genes)
+  normalized_data_names <- normalize_gene_name(gene_names_rownames)
+
+  available_cv <- cv_genes[normalized_markers_cv %in% normalized_data_names]
+  available_pn <- pn_genes[normalized_markers_pn %in% normalized_data_names]
+
+  if (length(available_cv) == 0 || length(available_pn) == 0) {
+    # Try matching with lowercase versions of markers
+    cv_genes_lower <- tolower(cv_genes)
+    pn_genes_lower <- tolower(pn_genes)
+
+    available_cv <- cv_genes[cv_genes_lower %in% gene_names_rownames]
+    available_pn <- pn_genes[pn_genes_lower %in% gene_names_rownames]
+
+    if (length(available_cv) == 0 || length(available_pn) == 0) {
+      stop("No marker genes found in the dataset")
+    }
+  }
+
+  # Calculate mean expression per cell
+  cv_expr <- colMeans(mat_norm[available_cv, , drop = FALSE], na.rm = TRUE)
+  pn_expr <- colMeans(mat_norm[available_pn, , drop = FALSE], na.rm = TRUE)
+
+  # Get CL score
+  cl_score <- if (use_strength && !is.null(seurat_obj$CL_strength)) {
+    seurat_obj$CL_strength
+  } else {
+    seurat_obj$CL_rank
+  }
+
+  # Ensure alignment
+  common_cells <- intersect(names(cl_score), names(cv_expr))
+  cv_expr <- cv_expr[common_cells]
+  pn_expr <- pn_expr[common_cells]
+  cl_score <- cl_score[common_cells]
+
+  # Sample cells if needed
+  if (length(common_cells) > n_cells) {
+    set.seed(42)
+    sample_idx <- sample(length(common_cells), n_cells)
+    cv_expr <- cv_expr[sample_idx]
+    pn_expr <- pn_expr[sample_idx]
+    cl_score <- cl_score[sample_idx]
+  }
+
+  # Create data frame
+  plot_df <- data.frame(
+    cv_expr = cv_expr,
+    pn_expr = pn_expr,
+    cl_score = cl_score
+  )
+
+  # Create plot
+  p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = cv_expr, y = pn_expr, color = cl_score)) +
+    ggplot2::geom_point(size = point_size, alpha = alpha) +
+    ggplot2::scale_color_viridis_c(
+      name = if (use_strength) "CL_strength" else "CL_rank",
+      option = "viridis"
+    )
+
+  # Add diagonal reference line
+  if (add_abline) {
+    p <- p + ggplot2::geom_abline(
+      slope = 1,
+      intercept = 0,
+      linetype = "dashed",
+      color = "gray40",
+      linewidth = 0.8
+    )
+  }
+
+  p <- p +
+    ggplot2::labs(
+      title = title,
+      subtitle = sprintf("n=%d cells | %d CV markers | %d PN markers",
+                        length(cv_expr), length(available_cv), length(available_pn)),
+      x = "Mean CV Marker Expression",
+      y = "Mean PN Marker Expression"
+    ) +
+    .theme_publication() +
+    ggplot2::theme(
+      legend.position = "right",
+      panel.grid.minor = ggplot2::element_blank()
+    )
+
+  return(p)
+}
+
+
+#' Plot Raw PCA Gradient vs Final CL Score
+#'
+#' Validates the spatial positioning by comparing the raw PCA-based
+#' gradient to the final CL score after processing.
+#'
+#' @param seurat_obj Seurat object with pca_gradient and CL scores
+#' @param use_strength Use CL_strength for y-axis (default: TRUE)
+#' @param add_smooth Add LOESS smooth line (default: TRUE)
+#' @param point_size Point size (default: 0.8)
+#' @param alpha Point transparency (default: 0.3)
+#' @param title Plot title
+#' @return A ggplot object
+#' @export
+plot_pca_vs_cl <- function(seurat_obj,
+                            use_strength = TRUE,
+                            add_smooth = TRUE,
+                            point_size = 0.8,
+                            alpha = 0.3,
+                            title = "Raw PCA Gradient vs Final CL Score") {
+
+  # Get scores
+  pca_grad <- seurat_obj$pca_gradient
+  cl_score <- if (use_strength && !is.null(seurat_obj$CL_strength)) {
+    seurat_obj$CL_strength
+  } else {
+    seurat_obj$CL_rank
+  }
+
+  # Ensure alignment
+  common_cells <- intersect(names(pca_grad), names(cl_score))
+  plot_df <- data.frame(
+    pca_gradient = pca_grad[common_cells],
+    cl_score = cl_score[common_cells]
+  )
+
+  # Calculate correlation
+  corr <- cor(plot_df$pca_gradient, plot_df$cl_score, use = "complete.obs")
+
+  # Create plot
+  p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = pca_gradient, y = cl_score)) +
+    ggplot2::geom_point(size = point_size, alpha = alpha, color = "#3B4992")
+
+  if (add_smooth) {
+    p <- p + ggplot2::geom_smooth(
+      method = "loess",
+      color = "#E64B35",
+      linewidth = 1.2,
+      se = TRUE
+    )
+  }
+
+  p <- p +
+    ggplot2::annotate(
+      "text",
+      x = Inf, y = -Inf,
+      label = sprintf("r = %.3f", corr),
+      hjust = 1.1,
+      vjust = -0.5,
+      size = 4,
+      fontface = "bold"
+    ) +
+    ggplot2::labs(
+      title = title,
+      subtitle = "Validation: Raw PCA gradient vs Final CL score",
+      x = "Raw PCA Gradient",
+      y = if (use_strength) "CL_strength" else "CL_rank"
+    ) +
+    .theme_publication() +
+    ggplot2::theme(
+      panel.grid.minor = ggplot2::element_blank()
+    )
+
+  return(p)
+}
+
+
+#' Plot Distribution of CL Scores
+#'
+#' Publication-quality histograms showing both CL_rank and CL_strength
+#' distributions for quality control.
+#'
+#' @param seurat_obj Seurat object with CL_rank and CL_strength
+#' @param bins Number of histogram bins (default: 50)
+#' @param colors Colors for rank and strength (default: c("#3B4992", "#E64B35"))
+#' @param ncol Number of columns for facet (default: 2)
+#' @param title Plot title
+#' @return A ggplot object
+#' @export
+plot_cl_scores_dist <- function(seurat_obj,
+                                 bins = 50,
+                                 colors = c("#3B4992", "#E64B35"),
+                                 ncol = 2,
+                                 title = "Distribution of CL Scores") {
+
+  # Check for scores
+  has_rank <- !is.null(seurat_obj$CL_rank)
+  has_strength <- !is.null(seurat_obj$CL_strength)
+
+  if (!has_rank && !has_strength) {
+    stop("No CL scores found in the Seurat object")
+  }
+
+  # Create data frame
+  plot_df <- data.frame()
+
+  if (has_rank) {
+    rank_df <- data.frame(
+      score = seurat_obj$CL_rank,
+      type = "CL_rank",
+      value = seurat_obj$CL_rank
+    )
+    plot_df <- rbind(plot_df, rank_df)
+  }
+
+  if (has_strength) {
+    strength_df <- data.frame(
+      score = seurat_obj$CL_strength,
+      type = "CL_strength",
+      value = seurat_obj$CL_strength
+    )
+    plot_df <- rbind(plot_df, strength_df)
+  }
+
+  # Remove NA
+  plot_df <- plot_df[!is.na(plot_df$value), ]
+
+  # Create plot
+  p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = value, fill = type)) +
+    ggplot2::geom_histogram(bins = bins, color = "white", alpha = 0.7) +
+    ggplot2::facet_wrap(~type, scales = "free", ncol = ncol) +
+    ggplot2::scale_fill_manual(
+      values = c("CL_rank" = colors[1], "CL_strength" = colors[2]),
+      name = NULL
+    ) +
+    ggplot2::labs(
+      title = title,
+      subtitle = sprintf("CL_rank: range [%.3f, %.3f] | CL_strength: range [%.3f, %.3f]",
+                        if (has_rank) min(seurat_obj$CL_rank, na.rm = TRUE) else NA,
+                        if (has_rank) max(seurat_obj$CL_rank, na.rm = TRUE) else NA,
+                        if (has_strength) min(seurat_obj$CL_strength, na.rm = TRUE) else NA,
+                        if (has_strength) max(seurat_obj$CL_strength, na.rm = TRUE) else NA),
+      x = "Score Value",
+      y = "Number of Cells"
+    ) +
+    .theme_publication() +
+    ggplot2::theme(
+      legend.position = "none",
+      panel.grid.minor = ggplot2::element_blank()
+    )
+
+  return(p)
+}
+
+
+#' Plot Marker Expression vs CL Score
+#'
+#' Shows correlation between marker gene expression and CL score,
+#' useful for validating spatial positioning quality.
+#'
+#' @param seurat_obj Seurat object with CL scores
+#' @param normalized_data Optional normalized expression matrix (Gene x Cell).
+#'        If NULL, will try to get from seurat_obj@misc$mat_norm or assay layers.
+#' @param cv_genes CV marker genes (optional)
+#' @param pn_genes PN marker genes (optional)
+#' @param marker_type Type of markers: "CV", "PN", or "both" (default: "both")
+#' @param use_strength Use CL_strength (default: TRUE)
+#' @param n_cells Number of cells to plot (default: 5000)
+#' @param point_size Point size (default: 0.8)
+#' @param alpha Point transparency (default: 0.3)
+#' @param add_smooth Add LOESS smooth (default: TRUE)
+#' @param colors Colors for CV and PN (default: c("#E64B35", "#4DBBD5"))
+#' @param title Plot title
+#' @return A ggplot object
+#' @export
+plot_marker_vs_cl <- function(seurat_obj,
+                               normalized_data = NULL,
+                               cv_genes = NULL,
+                               pn_genes = NULL,
+                               marker_type = "both",
+                               use_strength = TRUE,
+                               n_cells = 5000,
+                               point_size = 0.8,
+                               alpha = 0.3,
+                               add_smooth = TRUE,
+                               colors = c("#E64B35", "#4DBBD5"),
+                               title = "Marker Expression vs CL Score") {
+
+  # Get normalized data - use provided matrix or try to get from seurat_obj
+  if (!is.null(normalized_data)) {
+    mat_norm <- normalized_data
+  } else if (!is.null(seurat_obj@misc$mat_norm)) {
+    mat_norm <- seurat_obj@misc$mat_norm
+  } else {
+    mat_norm <- .get_expr_data(seurat_obj)
+  }
+  gene_names <- rownames(mat_norm)
+
+  # Auto-detect gene name format
+  n_lower <- sum(gene_names == tolower(gene_names), na.rm = TRUE)
+  n_upper <- sum(gene_names == toupper(gene_names), na.rm = TRUE)
+  n_total <- sum(!is.na(gene_names))
+
+  # Use appropriate marker set based on gene name format
+  if (is.null(cv_genes) || is.null(pn_genes)) {
+    if (n_total > 0 && n_lower / n_total > 0.5) {
+      cv_genes <- tolower(.default_cv_markers_mouse())
+      pn_genes <- tolower(.default_pn_markers_mouse())
+    } else if (n_total > 0 && n_upper / n_total > 0.5) {
+      cv_genes <- toupper(.default_cv_markers_mouse())
+      pn_genes <- toupper(.default_pn_markers_mouse())
+    } else {
+      cv_genes <- .default_cv_markers_mouse()
+      pn_genes <- .default_pn_markers_mouse()
+    }
+  }
+
+  # Get gene names from the already-set mat_norm
+  gene_names_rownames <- rownames(mat_norm)
+
+  # Create a mapping function for flexible gene name matching
+  normalize_gene_name <- function(x) {
+    x <- tolower(x)
+    x <- gsub("_", "-", x)
+    x
+  }
+
+  # Get CL score
+  cl_score <- if (use_strength && !is.null(seurat_obj$CL_strength)) {
+    seurat_obj$CL_strength
+  } else {
+    seurat_obj$CL_rank
+  }
+
+  # Prepare plot data
+  plot_df <- data.frame()
+  y_label <- if (use_strength) "CL_strength" else "CL_rank"
+
+  # Normalize gene names for matching
+  normalized_markers_cv <- normalize_gene_name(cv_genes)
+  normalized_markers_pn <- normalize_gene_name(pn_genes)
+  normalized_data_names <- normalize_gene_name(gene_names_rownames)
+
+  # CV markers
+  if (marker_type %in% c("both", "CV")) {
+    available_cv <- cv_genes[normalized_markers_cv %in% normalized_data_names]
+    if (length(available_cv) > 0) {
+      cv_expr <- colMeans(mat_norm[available_cv, , drop = FALSE], na.rm = TRUE)
+      common_cells <- intersect(names(cl_score), names(cv_expr))
+      cv_df <- data.frame(
+        marker_expr = cv_expr[common_cells],
+        cl_score = cl_score[common_cells],
+        type = "CV Markers"
+      )
+      plot_df <- rbind(plot_df, cv_df)
+    }
+  }
+
+  # PN markers
+  if (marker_type %in% c("both", "PN")) {
+    available_pn <- pn_genes[normalized_markers_pn %in% normalized_data_names]
+    if (length(available_pn) > 0) {
+      pn_expr <- colMeans(mat_norm[available_pn, , drop = FALSE], na.rm = TRUE)
+      common_cells <- intersect(names(cl_score), names(pn_expr))
+      pn_df <- data.frame(
+        marker_expr = pn_expr[common_cells],
+        cl_score = cl_score[common_cells],
+        type = "PN Markers"
+      )
+      plot_df <- rbind(plot_df, pn_df)
+    }
+  }
+
+  if (nrow(plot_df) == 0) {
+    stop("No marker genes found")
+  }
+
+  # Sample if needed
+  if (nrow(plot_df) > n_cells) {
+    set.seed(42)
+    plot_df <- plot_df[sample(nrow(plot_df), n_cells), ]
+  }
+
+  # Calculate correlations
+  cv_corr <- NULL
+  pn_corr <- NULL
+  if ("CV Markers" %in% plot_df$type) {
+    cv_data <- plot_df[plot_df$type == "CV Markers", ]
+    cv_corr <- cor(cv_data$marker_expr, cv_data$cl_score, use = "complete.obs")
+  }
+  if ("PN Markers" %in% plot_df$type) {
+    pn_data <- plot_df[plot_df$type == "PN Markers", ]
+    pn_corr <- cor(pn_data$marker_expr, pn_data$cl_score, use = "complete.obs")
+  }
+
+  # Create plot
+  p <- ggplot2::ggplot(plot_df,
+                       ggplot2::aes(x = marker_expr, y = cl_score, color = type)) +
+    ggplot2::geom_point(size = point_size, alpha = alpha)
+
+  if (add_smooth) {
+    p <- p + ggplot2::geom_smooth(
+      method = "loess",
+      linewidth = 1.2,
+      se = TRUE
+    )
+  }
+
+  p <- p +
+    ggplot2::scale_color_manual(
+      values = c("CV Markers" = colors[1], "PN Markers" = colors[2]),
+      name = NULL
+    ) +
+    ggplot2::labs(
+      title = title,
+      subtitle = sprintf("CV: r=%.3f (expected: negative) | PN: r=%.3f (expected: positive)",
+                        if (!is.null(cv_corr)) cv_corr else NA,
+                        if (!is.null(pn_corr)) pn_corr else NA),
+      x = "Mean Marker Expression",
+      y = y_label
+    ) +
+    .theme_publication() +
+    ggplot2::theme(
+      legend.position = "top",
+      panel.grid.minor = ggplot2::element_blank()
+    )
+
+  return(p)
+}
+
+
+#' Calculate and Report Marker Correlations
+#'
+#' Computes correlations between PCA scores and marker gene expression
+#' for quality control and validation.
+#'
+#' @param seurat_obj Seurat object with processed data
+#' @param normalized_data Optional normalized expression matrix (Gene x Cell).
+#'        If NULL, will try to get from seurat_obj@misc$mat_norm or assay layers.
+#' @param cv_genes CV marker genes (optional)
+#' @param pn_genes PN marker genes (optional)
+#' @param verbose Print results (default: TRUE)
+#' @return List with correlation values
+#' @export
+report_marker_correlations <- function(seurat_obj,
+                                        normalized_data = NULL,
+                                        cv_genes = NULL,
+                                        pn_genes = NULL,
+                                        verbose = TRUE) {
+
+  # Get normalized data - use provided matrix or try to get from seurat_obj
+  if (!is.null(normalized_data)) {
+    mat_norm <- normalized_data
+  } else if (!is.null(seurat_obj@misc$mat_norm)) {
+    mat_norm <- seurat_obj@misc$mat_norm
+  } else {
+    mat_norm <- .get_expr_data(seurat_obj)
+  }
+  gene_names <- rownames(mat_norm)
+
+  # Auto-detect gene name format
+  n_lower <- sum(gene_names == tolower(gene_names), na.rm = TRUE)
+  n_upper <- sum(gene_names == toupper(gene_names), na.rm = TRUE)
+  n_total <- sum(!is.na(gene_names))
+
+  # Use appropriate marker set based on gene name format
+  if (is.null(cv_genes) || is.null(pn_genes)) {
+    if (n_total > 0 && n_lower / n_total > 0.5) {
+      cv_genes <- tolower(.default_cv_markers_mouse())
+      pn_genes <- tolower(.default_pn_markers_mouse())
+    } else if (n_total > 0 && n_upper / n_total > 0.5) {
+      cv_genes <- toupper(.default_cv_markers_mouse())
+      pn_genes <- toupper(.default_pn_markers_mouse())
+    } else {
+      cv_genes <- .default_cv_markers_mouse()
+      pn_genes <- .default_pn_markers_mouse()
+    }
+  }
+
+  # Reuse mat_norm if already set
+  if (is.null(normalized_data) && is.null(seurat_obj@misc$mat_norm)) {
+    mat_norm <- .get_expr_data(seurat_obj)
+  }
+  gene_names_rownames <- rownames(mat_norm)
+
+  # Create a mapping function for flexible gene name matching
+  normalize_gene_name <- function(x) {
+    x <- tolower(x)
+    x <- gsub("_", "-", x)
+    x
+  }
+
+  # Get scores
+  pc1 <- seurat_obj$pca_gradient
+  cv_score <- seurat_obj$cv_score
+  pn_score <- seurat_obj$pn_score
+
+  # Normalize gene names for matching
+  normalized_markers_cv <- normalize_gene_name(cv_genes)
+  normalized_markers_pn <- normalize_gene_name(pn_genes)
+  normalized_data_names <- normalize_gene_name(gene_names_rownames)
+
+  # Filter available genes with flexible matching
+  available_cv <- cv_genes[normalized_markers_cv %in% normalized_data_names]
+  available_pn <- pn_genes[normalized_markers_pn %in% normalized_data_names]
+
+  # Calculate mean marker expression per cell
+  cv_expr <- colMeans(mat_norm[available_cv, , drop = FALSE], na.rm = TRUE)
+  pn_expr <- colMeans(mat_norm[available_pn, , drop = FALSE], na.rm = TRUE)
+
+  # Align cells
+  common_cells <- intersect(names(pc1), names(cv_expr))
+  pc1_aligned <- pc1[common_cells]
+  cv_expr_aligned <- cv_expr[common_cells]
+  pn_expr_aligned <- pn_expr[common_cells]
+
+  # Calculate correlations
+  result <- list(
+    cv_markers_used = length(available_cv),
+    pn_markers_used = length(available_pn),
+    corr_pc1_cv = cor(pc1_aligned, cv_expr_aligned, use = "complete.obs"),
+    corr_pc1_pn = cor(pc1_aligned, pn_expr_aligned, use = "complete.obs"),
+    corr_cv_pn = cor(cv_expr_aligned, pn_expr_aligned, use = "complete.obs")
+  )
+
+  if (!is.null(cv_score) && !is.null(pn_score)) {
+    result$corr_cv_score_cv_expr <- cor(cv_score[common_cells], cv_expr_aligned, use = "complete.obs")
+    result$corr_pn_score_pn_expr <- cor(pn_score[common_cells], pn_expr_aligned, use = "complete.obs")
+  }
+
+  if (verbose) {
+    cat("\n=============================================================\n")
+    cat("  Marker Correlation Summary\n")
+    cat("=============================================================\n")
+    cat(sprintf("  CV markers used: %d / %d\n", length(available_cv), length(cv_genes)))
+    cat(sprintf("  PN markers used: %d / %d\n", length(available_pn), length(pn_genes)))
+    cat("\n  Correlations:\n")
+    cat(sprintf("    cor(PC1, CV expr): %.4f (expected: negative)\n", result$corr_pc1_cv))
+    cat(sprintf("    cor(PC1, PN expr): %.4f (expected: positive)\n", result$corr_pc1_pn))
+    cat(sprintf("    cor(CV expr, PN expr): %.4f (expected: negative)\n", result$corr_cv_pn))
+    if (!is.null(result$corr_cv_score_cv_expr)) {
+      cat(sprintf("    cor(CV_score, CV expr): %.4f\n", result$corr_cv_score_cv_expr))
+    }
+    if (!is.null(result$corr_pn_score_pn_expr)) {
+      cat(sprintf("    cor(PN_score, PN expr): %.4f\n", result$corr_pn_score_pn_expr))
+    }
+    cat("=============================================================\n")
+  }
+
+  return(result)
+}
+
+
+# ==============================================================================
+# Internal Helper Functions (for package use only)
+# ==============================================================================
+
+#' Get default CV markers for mouse
+#' @keywords internal
+.default_cv_markers_mouse <- function() {
+  c("Glul", "Cyp2e1", "Cyp1a2", "Cyp2f2", "Cyp2a6", "Hamp", "Hamp2",
+    "Oatp1a1", "Oatp1b2", "Mrp2", "Bsep", "Ugt2b1", "Gsta1", "Gsta2",
+    "Gstm1", "Gstm3", "Sult2a1", "Scd1", "Acss2", "Acaa1b", "Hmgcs2", "Mup3")
+}
+
+#' Get default PN markers for mouse
+#' @keywords internal
+.default_pn_markers_mouse <- function() {
+  c("Alb", "Apob", "Apoa1", "Apoa2", "Tf", "Ttr", "Fgg", "Fgb",
+    "Serpina1c", "Serpina1d", "Serpina1e", "C3", "F10", "PROC", "Apoc1",
+    "Apoc2", "Mup17", "Mup20", "Mup13")
+}
+
+#' Get normalized expression data from Seurat object
+#' @keywords internal
+.get_expr_data <- function(seurat_obj, assay = "RNA") {
+  assay_obj <- seurat_obj@assays[[assay]]
+  slot_names <- slotNames(assay_obj)
+
+  # Seurat v5: check layers first
+  if ("layers" %in% slot_names) {
+    layers <- assay_obj@layers
+    layer_names <- names(layers)
+    if ("data" %in% layer_names) {
+      return(layers[["data"]])
+    } else if ("scale" %in% layer_names) {
+      return(layers[["scale"]])
+    } else if ("counts" %in% layer_names) {
+      return(layers[["counts"]])
+    }
+  }
+
+  # Seurat v4: check data slot
+  if ("data" %in% slot_names) {
+    return(assay_obj@data)
+  }
+
+  # Fallback to counts
+  if ("counts" %in% slot_names) {
+    return(assay_obj@counts)
+  }
+
+  stop("Cannot find expression data in Seurat object")
+}
