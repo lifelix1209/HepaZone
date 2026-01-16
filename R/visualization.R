@@ -122,24 +122,28 @@ plot_spatial_heatmap <- function(hepa_result,
     expr_scaled <- expr_subset
   }
   
-  # Prepare zone labels
+  # Prepare zone labels - force CV to PV order (Zone 1 to Zone n)
+  n_zones <- ncol(expr_scaled)
   zone_labels <- if (show_zone_labels) {
-    paste0("Zone ", 1:ncol(expr_scaled))
+    paste0("Zone ", 1:n_zones)
   } else {
-    paste0("Z", 1:ncol(expr_scaled))
+    paste0("Z", 1:n_zones)
   }
+
+  # Ensure columns are in CV->PV order (Zone 1 to n)
+  # Set column names and create ordered factor for ggplot version
   colnames(expr_scaled) <- zone_labels
   
   # Use ggplot2 by default (use_ggplot = TRUE for compatibility with ggsave)
   use_complex <- requireNamespace("ComplexHeatmap", quietly = TRUE) && !use_ggplot
 
   if (use_complex) {
-    
+
     # Define color scheme
     if (color_palette == "RdYlBu") {
       col_fun <- circlize::colorRamp2(
-        c(min(expr_scaled, na.rm = TRUE), 
-          0, 
+        c(min(expr_scaled, na.rm = TRUE),
+          0,
           max(expr_scaled, na.rm = TRUE)),
         c("#0571B0", "#F7F7F7", "#CA0020")
       )
@@ -156,13 +160,13 @@ plot_spatial_heatmap <- function(hepa_result,
     } else {
       col_fun <- color_palette
     }
-    
-    # Create heatmap annotation
+
+    # Create heatmap annotation - CV to PV gradient
     ha_top <- ComplexHeatmap::HeatmapAnnotation(
-      Zone = 1:ncol(expr_scaled),
+      Zone = factor(zone_labels, levels = zone_labels),
       col = list(Zone = circlize::colorRamp2(
-        c(1, ncol(expr_scaled)), 
-        c("#2C7BB6", "#D7191C")
+        c(1, ncol(expr_scaled)),
+        c("#2C7BB6", "#D7191C")  # Blue (CV) to Red (PV)
       )),
       annotation_name_gp = grid::gpar(fontsize = fontsize_col, fontface = "bold"),
       annotation_legend_param = list(
@@ -170,44 +174,45 @@ plot_spatial_heatmap <- function(hepa_result,
         labels_gp = grid::gpar(fontsize = 9)
       )
     )
-    
-    # Create heatmap
+
+    # Create heatmap with CV->PV column order (disable column clustering)
     ht <- ComplexHeatmap::Heatmap(
       expr_scaled,
       name = if (scale_method == "none") "Expression" else "Scaled\nExpression",
       col = col_fun,
-      
-      # Clustering
+
+      # Clustering - DISABLE column clustering to preserve CV->PV order
       cluster_rows = cluster_genes,
-      cluster_columns = cluster_zones,
+      cluster_columns = FALSE,  # Force CV to PV order
       show_row_dend = cluster_genes,
-      show_column_dend = cluster_zones,
-      
+      show_column_dend = FALSE,
+
       # Row settings
       row_names_gp = grid::gpar(fontsize = fontsize_row),
       row_names_side = "left",
       row_dend_width = grid::unit(15, "mm"),
-      
-      # Column settings
+
+      # Column settings - explicit column order
+      column_order = zone_labels,  # Force CV->PV order
       column_names_gp = grid::gpar(fontsize = fontsize_col, fontface = "bold"),
       column_names_rot = 45,
       column_dend_height = grid::unit(15, "mm"),
       top_annotation = ha_top,
-      
+
       # Cell settings
       cell_fun = if (show_values) {
         function(j, i, x, y, width, height, fill) {
-          grid::grid.text(sprintf("%.2f", expr_scaled[i, j]), 
+          grid::grid.text(sprintf("%.2f", expr_scaled[i, j]),
                          x, y, gp = grid::gpar(fontsize = 8))
         }
       } else {
         NULL
       },
-      
+
       # Border
       border = TRUE,
       rect_gp = grid::gpar(col = "white", lwd = 1),
-      
+
       # Legend
       heatmap_legend_param = list(
         title_gp = grid::gpar(fontsize = 11, fontface = "bold"),
@@ -215,26 +220,31 @@ plot_spatial_heatmap <- function(hepa_result,
         legend_height = grid::unit(40, "mm"),
         legend_direction = "vertical"
       ),
-      
+
       # Title
       column_title = title,
       column_title_gp = grid::gpar(fontsize = 14, fontface = "bold")
     )
-    
+
     return(ht)
     
   } else {
     # Fallback to ggplot2
     expr_df <- as.data.frame(expr_scaled)
     expr_df$gene <- factor(rownames(expr_scaled), levels = rownames(expr_scaled))
-    
+
+    # Pivot to long format - ensure zone is an ordered factor (CV to PV)
     expr_long <- tidyr::pivot_longer(
       expr_df,
       cols = -gene,
       names_to = "zone",
       values_to = "expression"
     )
-    
+
+    # Convert zone to ordered factor to preserve CV->PV order (Zone 1 to n)
+    zone_order <- paste0(if (show_zone_labels) "Zone " else "Z", 1:n_zones)
+    expr_long$zone <- factor(expr_long$zone, levels = zone_order)
+
     # Order genes by clustering if requested
     if (cluster_genes) {
       gene_dist <- dist(expr_scaled)

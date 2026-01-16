@@ -230,12 +230,24 @@
 #' Uses Z-score normalization followed by PCA to extract the first principal
 #' component as the spatial gradient, providing optimal multi-gene weighting.
 #'
+#' Two types of CL scores are computed:
+#' \itemize{
+#'   \item CL_rank: Rank-based [0,1] transformation - preserves cell order for zoning
+#'   \item CL_strength: Robust sigmoid [0,1] transformation - preserves magnitude/confidence
+#' }
+#'
 #' @param seurat_obj Preprocessed Seurat object with normalized data
 #' @param cv_markers Character vector of central vein marker genes (optional)
 #' @param pn_markers Character vector of portal marker genes (optional)
 #' @param use_default_markers Use default marker sets if not provided (default: TRUE)
 #' @param use_pca Use PCA for multi-gene weighting (default: TRUE)
-#' @return Seurat object with 'pca_gradient', 'cv_score', 'pn_score', and 'CL_score' in meta.data
+#' @return Seurat object with the following in meta.data:
+#'   \item{pca_gradient}{CL_rank for backward compatibility}
+#'   \item{CL_rank}{Rank-based spatial position [0,1], for zoning/mapping}
+#'   \item{CL_strength}{Robust sigmoid spatial position [0,1], for visualization}
+#'   \item{pc1}{Raw first principal component scores}
+#'   \item{cv_score}{Sum of CV marker expressions}
+#'   \item{pn_score}{Sum of PN marker expressions}
 #' @examples
 #' \dontrun{
 #' seurat_obj <- preprocess_zonation(seurat_obj)
@@ -407,21 +419,53 @@ calculate_spatial_position <- function(seurat_obj,
       message("Flipping PC1 direction to align with PN markers")
     }
 
-    # Map PC1 to [0, 1] range using rank-based transformation
-    # This is more robust than min-max scaling
+    # ==============================================================================
+    # CL_rank: Rank-based [0,1] transformation
+    # Preserves order but loses magnitude information
+    # Use for: zone mapping, binning, categorical comparisons
+    # ==============================================================================
     pc1_ranks <- rank(pc1, ties.method = "average")
-    pca_gradient <- (pc1_ranks - 1) / (length(pc1_ranks) - 1)
+    cl_rank <- (pc1_ranks - 1) / (length(pc1_ranks) - 1)
+
+    # ==============================================================================
+    # CL_strength: Robust sigmoid transformation
+    # Preserves magnitude/confidence information
+    # Use for: visualization of true distribution, biological interpretation
+    # ==============================================================================
+    # Robust scaling: use median and MAD (Median Absolute Deviation)
+    pc1_median <- median(pc1, na.rm = TRUE)
+    pc1_mad <- median(abs(pc1 - pc1_median), na.rm = TRUE)
+
+    # Avoid division by zero
+    if (pc1_mad == 0) {
+      pc1_mad <- sd(pc1, na.rm = TRUE)
+      if (pc1_mad == 0) pc1_mad <- 1
+    }
+
+    # Robust z-score (using MAD instead of SD)
+    pc1_zscore <- (pc1 - pc1_median) / (1.4826 * pc1_mad)
+
+    # Sigmoid transformation: 1 / (1 + exp(-x))
+    # This maps z-scores to [0,1] with:
+    # - 0.5 at median (neutral position)
+    # - Values near 0 for strong CV signature
+    # - Values near 1 for strong PV signature
+    # - Smooth gradient in between
+    cl_strength <- 1 / (1 + exp(-pc1_zscore))
 
     # Store in metadata
-    seurat_obj$pca_gradient <- pca_gradient
+    seurat_obj$pca_gradient <- cl_rank      # Keep for backward compatibility
     seurat_obj$pc1 <- pc1
     seurat_obj$cv_score <- cv_score
     seurat_obj$pn_score <- pn_score
-    seurat_obj$CL_score <- pca_gradient
+    seurat_obj$CL_rank <- cl_rank           # Rank-based [0,1]
+    seurat_obj$CL_strength <- cl_strength   # Robust sigmoid [0,1]
+    seurat_obj$CL_score <- cl_rank          # Default CL_score is rank-based
 
-    message(sprintf("PCA gradient range: %.3f - %.3f",
-                    min(pca_gradient, na.rm = TRUE),
-                    max(pca_gradient, na.rm = TRUE)))
+    message(sprintf("CL_rank range: %.3f - %.3f (order preserved, for zoning)",
+                    min(cl_rank, na.rm = TRUE), max(cl_rank, na.rm = TRUE)))
+    message(sprintf("CL_strength range: %.3f - %.3f (magnitude preserved, for visualization)",
+                    min(cl_strength, na.rm = TRUE), max(cl_strength, na.rm = TRUE)))
     message(sprintf("PC1 explains %.1f%% of marker gene variance",
                     summary(pca_result)$importance[2, 1] * 100))
 
@@ -530,7 +574,16 @@ knn_smooth_scores <- function(seurat_obj,
 
   # Find k nearest neighbors for each cell (excluding self)
   message("Finding k-nearest neighbors...")
-  smoothed_scores <- numeric(n_cells)
+
+  # Get all relevant score columns
+  score_cols <- c("CL_rank", "CL_strength")
+  available_scores <- score_cols[score_cols %in% colnames(seurat_obj@meta.data)]
+
+  # Initialize smoothed scores for each column
+  smoothed_scores_list <- list()
+  for (sc in available_scores) {
+    smoothed_scores_list[[sc]] <- numeric(n_cells)
+  }
 
   for (i in 1:n_cells) {
     # Get distances to all other cells
@@ -553,31 +606,43 @@ knn_smooth_scores <- function(seurat_obj,
       self_weight <- 0.5  # Weight for original cell
       neighbor_weight <- (1 - self_weight) / k
 
-      smoothed_scores[i] <- self_weight * scores[i] +
-                           neighbor_weight * sum(scores[neighbor_order])
+      # Smooth each score column
+      for (sc in available_scores) {
+        sc_scores <- seurat_obj@meta.data[[sc]]
+        smoothed_scores_list[[sc]][[i]] <- self_weight * sc_scores[i] +
+                                            neighbor_weight * sum(sc_scores[neighbor_order])
+      }
     } else {
       # Simple average of self and neighbors
-      smoothed_scores[i] <- mean(c(scores[i], scores[neighbor_order]))
+      for (sc in available_scores) {
+        sc_scores <- seurat_obj@meta.data[[sc]]
+        smoothed_scores_list[[sc]][[i]] <- mean(c(sc_scores[i], sc_scores[neighbor_order]))
+      }
     }
   }
 
-  # Map to [0, 1] range using rank-based transformation (more robust)
-  smoothed_ranks <- rank(smoothed_scores, ties.method = "average")
-  smoothed_scores_scaled <- (smoothed_ranks - 1) / (length(smoothed_ranks) - 1)
+  # Store smoothed scores
+  for (sc in available_scores) {
+    smoothed_scores <- smoothed_scores_list[[sc]]
 
-  # Add smoothed scores to metadata
-  new_col_name <- paste0("smoothed_", score_col)
-  seurat_obj@meta.data[[new_col_name]] <- smoothed_scores_scaled
+    # Map to [0, 1] range using rank-based transformation
+    smoothed_ranks <- rank(smoothed_scores, ties.method = "average")
+    smoothed_scores_scaled <- (smoothed_ranks - 1) / (length(smoothed_ranks) - 1)
 
-  # Update CL_score to use smoothed version if it was the original score
-  if (score_col == "CL_score") {
-    seurat_obj$CL_score <- smoothed_scores_scaled
-    message("Updated CL_score with smoothed values")
+    # Add smoothed scores to metadata
+    new_col_name <- paste0("smoothed_", sc)
+    seurat_obj@meta.data[[new_col_name]] <- smoothed_scores_scaled
+
+    message(sprintf("Smoothed %s range: %.3f - %.3f",
+                    sc, min(smoothed_scores_scaled, na.rm = TRUE),
+                    max(smoothed_scores_scaled, na.rm = TRUE)))
   }
 
-  message(sprintf("Smoothed score range: %.3f - %.3f",
-                  min(smoothed_scores_scaled, na.rm = TRUE),
-                  max(smoothed_scores_scaled, na.rm = TRUE)))
+  # Update default CL_score if we smoothed CL_rank
+  if ("CL_rank" %in% available_scores) {
+    seurat_obj$CL_score <- seurat_obj$smoothed_CL_rank
+    message("Updated CL_score with smoothed CL_rank values")
+  }
 
   return(seurat_obj)
 }
@@ -612,75 +677,185 @@ knn_smooth_scores <- function(seurat_obj,
 }
 
 
-#' Map Cells to Spatial Layers Using Gamma Distribution
+#' Map Mode and Concentration to Beta Distribution Parameters
+#'
+#' Converts a mode (position) and concentration (kappa) to Beta distribution
+#' alpha and beta parameters.
+#'
+#' The concentration parameter kappa controls how "tight" the distribution is:
+#' - Higher kappa = narrower distribution (more confident)
+#' - Lower kappa = wider distribution (more uncertainty)
+#'
+#' Formula: Given mode m and kappa > 2,
+#'   alpha = 1 + m * (kappa - 2)
+#'   beta = 1 + (1 - m) * (kappa - 2)
+#'
+#' @param modes Numeric vector of modes (0 to 1)
+#' @param kappa Concentration parameter (must be > 2, default: 30)
+#' @return List with alpha and beta parameters
+#' @keywords internal
+.map_beta_params_from_mode <- function(modes, kappa = 30) {
+  if (kappa <= 2) {
+    stop("kappa must be > 2 for valid Beta distribution parameters")
+  }
+
+  a <- 1 + modes * (kappa - 2)
+  b <- 1 + (1 - modes) * (kappa - 2)
+
+  return(list(a = a, b = b))
+}
+
+
+#' Map Cells to Spatial Layers Using Beta Distribution
 #'
 #' Assigns each cell to spatial layers based on their CL score using
-#' a mixture of Gamma distributions. Each zone has a pre-defined Gamma
-#' distribution, and cells are probabilistically assigned to zones.
+#' a mixture of Beta distributions. Each zone has a pre-defined Beta
+#' distribution centered at its zone mode, and cells are probabilistically
+#' assigned to zones using CL_strength for confidence weighting.
 #'
-#' @param seurat_obj Seurat object with CL_score in meta.data
+#' Two types of zone assignment are computed:
+#' \itemize{
+#'   \item zone_hard: Hard assignment based on CL_rank (deterministic)
+#'   \item zone_soft: Probabilistic assignment based on Beta distributions weighted by CL_strength
+#' }
+#'
+#' Uncertainty metrics:
+#' \itemize{
+#'   \item entropy: Shannon entropy of probability distribution (higher = more uncertain)
+#'   \item confidence: 1 - normalized entropy (1 = confident, 0 = uncertain)
+#'   \item max_prob: Maximum probability in the distribution
+#' }
+#'
+#' @param seurat_obj Seurat object with CL_score/CL_rank and CL_strength in meta.data
 #' @param n_zones Number of spatial zones (default: 10)
-#' @param gamma_shape Shape parameter for Gamma distributions (default: 5)
+#' @param kappa Concentration parameter for Beta distributions (must be > 2, default: 30)
+#'              Higher kappa = narrower distributions (more confident zone assignment)
 #' @param return_matrix If TRUE, return probability matrix; if FALSE, add to Seurat (default: TRUE)
-#' @return If return_matrix = TRUE, returns probability matrix (cells x zones).
+#' @return If return_matrix = TRUE, returns a list containing:
+#'   \item{prob_matrix}{Cell x Zone probability matrix}
+#'   \item{zone_hard}{Hard zone assignment based on CL_rank}
+#'   \item{entropy}{Shannon entropy of probability distribution}
+#'   \item{confidence}{Confidence score (1 - normalized entropy)}
+#'   \item{max_prob}{Maximum probability in distribution}
 #'         Otherwise, returns modified Seurat object.
 #' @examples
 #' \dontrun{
-#' prob_matrix <- map_cells_to_layers(seurat_obj, n_zones = 10)
+#' # Get probability matrix with uncertainty metrics
+#' result <- map_cells_to_layers(seurat_obj, n_zones = 10, kappa = 30)
+#' prob_matrix <- result$prob_matrix
+#'
+#' # Add directly to Seurat object
+#' seurat_obj <- map_cells_to_layers(seurat_obj, n_zones = 10, return_matrix = FALSE)
 #' }
 #' @export
 map_cells_to_layers <- function(seurat_obj,
                                  n_zones = 10,
-                                 gamma_shape = 5,
+                                 kappa = 30,
                                  return_matrix = TRUE) {
 
-  # Get CL scores
-  cl_scores <- seurat_obj$CL_score
-  n_cells <- length(cl_scores)
+  # Get CL scores - prefer CL_rank for hard assignment
+  cl_rank <- seurat_obj$CL_rank
+  cl_strength <- seurat_obj$CL_strength
+  n_cells <- length(cl_rank)
 
-  if (is.null(cl_scores)) {
-    stop("CL_score not found. Run calculate_spatial_position() first.")
+  if (is.null(cl_rank)) {
+    stop("CL_rank not found. Run calculate_spatial_position() first.")
   }
 
-  # Generate Gamma distribution parameters
-  gamma_params <- .generate_gamma_params(n_zones, gamma_shape)
+  # Use CL_strength for confidence weighting (default to 0.5 if not available)
+  if (is.null(cl_strength)) {
+    warning("CL_strength not found. Using uniform weighting (kappa=10).")
+    cl_strength <- rep(0.5, n_cells)
+    kappa <- 10  # Lower kappa for less confident distributions
+  }
 
-  message(sprintf("Gamma distribution modes: %s",
-                  paste(round(gamma_params$mode, 2), collapse = ", ")))
+  # Generate zone modes uniformly from 0 to 1
+  zone_modes <- seq(0, 1, length.out = n_zones)
 
-  # Calculate probability density for each cell at each zone's Gamma mode
+  message(sprintf("Beta distribution modes: %s",
+                  paste(round(zone_modes, 2), collapse = ", ")))
+
+  # Calculate Beta distribution parameters for each zone
+  beta_params <- .map_beta_params_from_mode(zone_modes, kappa = kappa)
+
+  # Calculate probability density for each cell at each zone's mode
   prob_matrix <- matrix(0, nrow = n_cells, ncol = n_zones)
 
-  # Scale CL scores to 0-1 range if needed (Gamma needs positive values)
-  cl_scaled <- pmax(pmin(cl_scores, 0.999), 0.001)
-
+  # For each zone, calculate Beta PDF at each cell's position
   for (z in 1:n_zones) {
-    shape_z <- gamma_params$shape[z]
-    rate_z <- gamma_params$rate[z]
+    a_z <- beta_params$a[z]
+    b_z <- beta_params$b[z]
 
-    # Gamma distribution density
-    prob_matrix[, z] <- stats::dgamma(cl_scaled, shape = shape_z, rate = rate_z)
+    # Beta distribution density at cl_rank values
+    # Using Beta PDF: x^(a-1) * (1-x)^(b-1) / B(a,b)
+    prob_matrix[, z] <- stats::dbeta(cl_rank, shape1 = a_z, shape2 = b_z)
   }
+
+  # Weight by CL_strength (cells with high CL_strength have sharper distributions)
+  # CL_strength scales the probability density: higher confidence = sharper peaks
+  strength_weight <- 0.5 + cl_strength  # Maps [0,1] to [0.5, 1.5]
+
+  # Apply strength weighting column-wise (each zone's probability scaled by cell's confidence)
+  prob_matrix <- prob_matrix * strength_weight
 
   # Normalize to get probabilities (row-wise softmax)
   row_sums <- Matrix::rowSums(prob_matrix)
   row_sums[row_sums == 0] <- 1  # Avoid division by zero
   prob_matrix <- prob_matrix / row_sums
 
+  # ==============================================================================
+  # Calculate uncertainty metrics
+  # ==============================================================================
+
+  # Shannon entropy: H = -sum(p * log(p))
+  # Maximum entropy for n_zones is log(n_zones) (uniform distribution)
+  entropy <- apply(prob_matrix, 1, function(p) {
+    p_nonzero <- p[p > 0]
+    if (length(p_nonzero) == 0) return(0)
+    -sum(p_nonzero * log(p_nonzero))
+  })
+
+  # Normalized confidence: 1 - H / log(n_zones)
+  max_entropy <- log(n_zones)
+  confidence <- 1 - (entropy / max_entropy)
+  confidence[is.na(confidence)] <- 0
+
+  # Maximum probability (another measure of certainty)
+  max_prob <- apply(prob_matrix, 1, max)
+
+  # Hard zone assignment based on CL_rank (1-indexed for zones)
+  zone_hard <- floor(cl_rank * n_zones) + 1
+  zone_hard <- pmin(pmax(zone_hard, 1), n_zones)
+
   # Add zone names
   colnames(prob_matrix) <- paste0("Zone_", 1:n_zones)
   rownames(prob_matrix) <- colnames(seurat_obj)
 
   if (return_matrix) {
-    return(prob_matrix)
+    return(list(
+      prob_matrix = prob_matrix,
+      zone_hard = zone_hard,
+      entropy = entropy,
+      confidence = confidence,
+      max_prob = max_prob
+    ))
   } else {
     # Add to Seurat object
     prob_df <- as.data.frame(prob_matrix)
     seurat_obj <- AddMetaData(seurat_obj, prob_df)
 
-    # Also add dominant zone assignment
-    dominant_zone <- apply(prob_matrix, 1, which.max)
-    seurat_obj$dominant_zone <- dominant_zone
+    # Add uncertainty metrics
+    seurat_obj$zone_hard <- zone_hard
+    seurat_obj$zone_entropy <- entropy
+    seurat_obj$zone_confidence <- confidence
+    seurat_obj$zone_max_prob <- max_prob
+
+    # Add soft zone assignment (most probable zone)
+    zone_soft <- apply(prob_matrix, 1, which.max)
+    seurat_obj$zone_soft <- zone_soft
+
+    message(sprintf("Zone confidence: mean=%.3f, median=%.3f",
+                    mean(confidence, na.rm = TRUE), median(confidence, na.rm = TRUE)))
 
     return(seurat_obj)
   }
