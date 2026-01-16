@@ -1,6 +1,9 @@
 # ==============================================================================
 # HepaZone Test with Optimized Algorithm (PCA + KNN Smoothing)
 # ==============================================================================
+# This script tests the complete pipeline using hepa_zone_reconstruct()
+# which handles all steps automatically.
+# ==============================================================================
 
 library(Seurat)
 library(Matrix)
@@ -21,11 +24,13 @@ source("R/visualization.R")
 source("R/main.R")
 
 # ==============================================================================
-# Load Data
+# Run Complete Analysis Pipeline
 # ==============================================================================
-cat(">>> Loading data (ZT00A sample)...\n\n")
+cat(">>> Loading data and running analysis...\n\n")
 
 data_path <- "GSE145197_data/10x_format/ZT00/ZT00A"
+n_zones <- 10
+
 seurat_obj <- load_10x_data(
   path = data_path,
   sample.name = "ZT00A",
@@ -33,86 +38,9 @@ seurat_obj <- load_10x_data(
   min.features = 200
 )
 
-cat("\nSeurat object info:\n")
-cat(sprintf("  - Genes: %d\n", nrow(seurat_obj)))
-cat(sprintf("  - Cells: %d\n", ncol(seurat_obj)))
+cat(sprintf("Loaded %d cells x %d genes\n\n", nrow(seurat_obj), ncol(seurat_obj)))
 
-# ==============================================================================
-# Preprocessing
-# ==============================================================================
-cat("\n>>> Step 1: Preprocessing...\n\n")
-
-seurat_obj <- preprocess_zonation(
-  seurat_obj,
-  mt_pattern = "^Mt-",
-  remove_mup = TRUE
-)
-
-cat(sprintf("  After preprocessing: %d genes x %d cells\n",
-            nrow(seurat_obj), ncol(seurat_obj)))
-
-# ==============================================================================
-# Step 1: Calculate Spatial Position with PCA (NEW METHOD)
-# ==============================================================================
-cat("\n>>> Step 2: Calculate Spatial Position (PCA-based method)...\n\n")
-
-seurat_obj <- calculate_spatial_position(
-  seurat_obj,
-  use_default_markers = TRUE,  # AUTO-DETECT: mouse vs human
-  use_pca = TRUE  # NEW: Use PCA-based weighting
-)
-
-cat("\nCL Score statistics (PCA gradient):\n")
-cat(sprintf("  - Mean: %.3f\n", mean(seurat_obj$CL_score, na.rm = TRUE)))
-cat(sprintf("  - SD: %.3f\n", sd(seurat_obj$CL_score, na.rm = TRUE)))
-cat(sprintf("  - Range: %.3f - %.3f\n",
-            min(seurat_obj$CL_score, na.rm = TRUE),
-            max(seurat_obj$CL_score, na.rm = TRUE)))
-
-# ==============================================================================
-# Step 2: KNN Smoothing (NEW METHOD)
-# ==============================================================================
-cat("\n>>> Step 3: KNN Smoothing...\n\n")
-
-seurat_obj <- knn_smooth_scores(
-  seurat_obj,
-  score_col = "CL_score",
-  k = 20,
-  use_pca = TRUE,
-  n_pcs = 30,
-  weight_by_distance = TRUE
-)
-
-cat("\nSmoothed CL Score statistics:\n")
-cat(sprintf("  - Mean: %.3f\n", mean(seurat_obj$CL_score, na.rm = TRUE)))
-cat(sprintf("  - SD: %.3f\n", sd(seurat_obj$CL_score, na.rm = TRUE)))
-cat(sprintf("  - Range: %.3f - %.3f\n",
-            min(seurat_obj$CL_score, na.rm = TRUE),
-            max(seurat_obj$CL_score, na.rm = TRUE)))
-
-# ==============================================================================
-# Step 3: Map Cells to Zones
-# ==============================================================================
-cat("\n>>> Step 4: Map cells to spatial zones...\n\n")
-
-n_zones <- 10
-# map_cells_to_layers now returns a list with prob_matrix, zone_hard, entropy, confidence, max_prob
-zone_result <- map_cells_to_layers(seurat_obj, n_zones = n_zones, return_matrix = TRUE)
-prob_matrix <- zone_result$prob_matrix
-
-cat("Probability matrix dimensions:", nrow(prob_matrix), "x", ncol(prob_matrix), "\n")
-cat("Cells per zone:\n")
-zone_counts <- colSums(prob_matrix)
-for (z in 1:n_zones) {
-  cat(sprintf("  Zone %d: %.1f cells (%.1f%%)\n",
-              z, zone_counts[z], 100 * zone_counts[z] / sum(zone_counts)))
-}
-
-# ==============================================================================
-# Step 4: Run Complete Analysis
-# ==============================================================================
-cat("\n>>> Step 5: Running HepaZone reconstruction...\n\n")
-
+# Run complete pipeline in one call
 result <- hepa_zone_reconstruct(
   seurat_obj,
   n_zones = n_zones,
@@ -131,11 +59,6 @@ result <- hepa_zone_reconstruct(
 cat("\n=============================================================\n")
 cat("  Analysis Results\n")
 cat("=============================================================\n\n")
-
-cat("Data summary:\n")
-cat(sprintf("  - Cells analyzed: %d\n", ncol(seurat_obj)))
-cat(sprintf("  - Genes analyzed: %d\n", nrow(result$mean_expression)))
-cat(sprintf("  - Spatial zones: %d\n\n", result$n_zones))
 
 cat("Method used:\n")
 cat(sprintf("  - PCA-based weighting: %s\n", ifelse(result$method_params$use_pca, "Yes", "No")))
@@ -184,10 +107,13 @@ if (!dir.exists(output_dir)) {
   dir.create(output_dir, recursive = TRUE)
 }
 
-# 1. CL Score distribution comparison
+# Get prob_matrix from result
+prob_matrix <- result$prob_matrix
+
+# 1. CL Score distribution
 cat("  - CL score distribution...\n")
 p1 <- plot_cl_distribution(seurat_obj, prob_matrix = prob_matrix,
-                          title = "Optimized Algorithm: Cell Distribution Along Spatial Axis")
+                          title = "Optimized Algorithm: Cell Distribution")
 ggsave(file.path(output_dir, "cl_score_distribution.png"), p1, width = 8, height = 6)
 
 # 2. Top SVG heatmap

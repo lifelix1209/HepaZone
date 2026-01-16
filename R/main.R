@@ -19,7 +19,8 @@
 #' @param remove_mup Remove Mup genes (default: TRUE)
 #' @param do_filter Filter low-quality cells by mitochondrial content (default: TRUE)
 #' @param max_mt_percent Maximum mitochondrial percentage for filtering (default: 20)
-#' @param gamma_shape Shape parameter for Gamma distribution (default: 5)
+#' @param kappa Concentration parameter for Beta distributions (must be > 2, default: 30)
+#'              Higher kappa = narrower distributions (more confident zone assignment)
 #' @param use_pca Use PCA for multi-gene weighting (default: TRUE)
 #' @param knn_smooth Apply KNN smoothing after gradient calculation (default: TRUE)
 #' @param k_neighbors Number of nearest neighbors for KNN smoothing (default: 20)
@@ -62,8 +63,7 @@ hepa_zone_reconstruct <- function(seurat_obj,
                                     remove_mup = TRUE,
                                     do_filter = TRUE,
                                     max_mt_percent = 20,
-                                    gamma_shape = 5,
-                                    use_pca = TRUE,
+                                    kappa = 30,
                                     knn_smooth = TRUE,
                                     k_neighbors = 20,
                                     seed = 42,
@@ -160,7 +160,7 @@ hepa_zone_reconstruct <- function(seurat_obj,
   zone_result <- map_cells_to_layers(
     seurat_obj,
     n_zones = n_zones,
-    kappa = (gamma_shape + 25),  # Convert to equivalent kappa for Beta
+    kappa = kappa,
     return_matrix = TRUE
   )
 
