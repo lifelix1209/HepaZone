@@ -188,7 +188,9 @@ cat(sprintf("  - Range: %.3f - %.3f\n",
 cat("\n>>> Step 5: Mapping cells to spatial layers\n\n")
 
 n_zones <- 10
-prob_matrix <- map_cells_to_layers(seurat_obj, n_zones = n_zones)
+# map_cells_to_layers now returns a list with prob_matrix, zone_hard, entropy, confidence, max_prob
+zone_result <- map_cells_to_layers(seurat_obj, n_zones = n_zones, return_matrix = TRUE)
+prob_matrix <- zone_result$prob_matrix
 
 cat("Probability matrix:", nrow(prob_matrix), "x", ncol(prob_matrix), "\n")
 cat("Cells per zone:\n")

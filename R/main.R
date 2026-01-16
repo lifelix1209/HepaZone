@@ -155,12 +155,20 @@ hepa_zone_reconstruct <- function(seurat_obj,
   # ===========================================================================
   msg("Step 5: Mapping cells to %d spatial layers...", n_zones)
 
-  prob_matrix <- map_cells_to_layers(
+  # map_cells_to_layers now returns a list with prob_matrix, zone_hard,
+  # entropy, confidence, max_prob
+  zone_result <- map_cells_to_layers(
     seurat_obj,
     n_zones = n_zones,
-    gamma_shape = gamma_shape,
+    kappa = (gamma_shape + 25),  # Convert to equivalent kappa for Beta
     return_matrix = TRUE
   )
+
+  prob_matrix <- zone_result$prob_matrix
+
+  # Add zone assignments to results
+  msg("  Zone mapping: mean confidence = %.3f",
+      mean(zone_result$confidence, na.rm = TRUE))
 
   # ===========================================================================
   # Step 6: Reconstruct Spatial Expression Profiles
